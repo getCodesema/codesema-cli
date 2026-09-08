@@ -27,7 +27,7 @@ const exact = computed(() => formatExactStamp(props.event.at))
       <span
         >{{ t('workspace.agentLabel') }}<template v-if="ago"> · {{ ago }}</template></span
       >
-      <span class="tvq-tag badge" data-tone="warn">{{ t('workspace.evQuestion') }}</span>
+      <span class="tvq-tag">{{ t('workspace.evQuestion') }}</span>
     </p>
     <p class="tvq-bubble question" :class="{ 'tvq-bubble--active': ctx.active }">
       <span class="tvq-text q">
@@ -59,13 +59,14 @@ const exact = computed(() => formatExactStamp(props.event.at))
   color: var(--fg-muted);
 }
 
-/* Amber carries the state: this question blocks the task. The kit's boxed
-   `.question` is flattened here to the left rail the thread reads by. */
+/* The kit's `.question` draws the amber rail; amber is the state here — this
+   question blocks the task — and the tag beside it says so in words. */
+.tvq-tag {
+  color: var(--warn);
+}
+
 .tvq-bubble {
   margin: 0;
-  border: 0;
-  border-left: 2px solid var(--warn);
-  padding: 0 0 0 1ch;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   min-width: 0;
@@ -79,7 +80,7 @@ const exact = computed(() => formatExactStamp(props.event.at))
 
 .tvq-code {
   font-size: 12px;
-  color: var(--warn);
+  color: var(--fg);
   background: none;
   padding: 0;
   white-space: pre-wrap;

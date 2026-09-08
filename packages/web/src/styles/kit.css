@@ -753,15 +753,8 @@ button.cell[aria-pressed='true'] {
 
 .msg .who {
   color: var(--fg-muted);
+  font-size: 12px;
   text-align: right;
-}
-
-.msg .who.you {
-  color: var(--accent);
-}
-
-.msg .who.ai {
-  color: var(--fg-dim);
 }
 
 .msg .body {
@@ -770,10 +763,12 @@ button.cell[aria-pressed='true'] {
   overflow-wrap: anywhere;
 }
 
+/* The one filled surface of the thread: what the reader typed. Nothing else
+   here carries a background, a frame or a rail. */
 .msg.user .body {
   color: var(--fg);
-  border-left: 2px solid var(--accent);
-  padding-left: 1ch;
+  background: var(--bg-raised);
+  padding: calc(var(--row) / 2) 2ch;
 }
 
 .msg.live .body::after {
@@ -787,13 +782,11 @@ button.cell[aria-pressed='true'] {
   font-size: 12px;
 }
 
-.tools {
-  border-left: 2px solid var(--line);
-}
-
+/* A folded run is one dim line, not a framed block: the disclosure glyph and
+   the whitespace around it carry the grouping. */
 .tools summary {
   cursor: pointer;
-  padding: 2px 1ch;
+  padding: 0;
   color: var(--fg-dim);
   list-style: none;
 }
@@ -837,16 +830,18 @@ button.cell[aria-pressed='true'] {
   color: var(--fg-muted);
 }
 
+/* Amber on a rail, not a box: a question is the one block of the thread that
+   waits on the reader. The words themselves stay body text. */
 .question {
-  border: 1px solid var(--warn);
-  padding: calc(var(--row) / 2) 1ch;
+  border-left: 2px solid var(--warn);
+  padding: 0 0 0 1ch;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
 .question .q {
-  color: var(--warn);
+  color: var(--fg);
 }
 
 .question .q::before {
@@ -924,9 +919,10 @@ button.cell[aria-pressed='true'] {
   font-size: 12px;
 }
 
+/* In flight is not a state to act on: the blinking status dot says it, the
+   block itself stays as quiet as any other. */
 .review-live {
-  border-left: 2px solid var(--info);
-  padding: 2px 1ch;
+  padding: 0;
   display: flex;
   justify-content: space-between;
   gap: 2ch;
@@ -934,7 +930,7 @@ button.cell[aria-pressed='true'] {
 }
 
 .review-live b {
-  color: var(--info);
+  color: var(--fg-dim);
   font-weight: 400;
 }
 
@@ -1216,16 +1212,14 @@ button.cell[aria-pressed='true'] {
 .checks {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  border-bottom: 1px solid var(--line);
+  gap: calc(var(--row) / 2);
 }
 
 .check-row {
   display: grid;
   grid-template-columns: 2ch 1fr auto auto;
   gap: 2ch;
-  padding: 2px 1ch;
-  border-top: 1px solid var(--line);
+  padding: 0;
   align-items: baseline;
 }
 

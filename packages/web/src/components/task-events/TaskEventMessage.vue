@@ -98,7 +98,6 @@ const exact = computed(() => formatExactStamp(props.event.at))
 
 .tvm-md :deep(pre) {
   padding: calc(var(--row) / 2) 1ch;
-  border-left: 2px solid var(--line);
   background: var(--bg-raised);
   overflow-x: auto;
 }

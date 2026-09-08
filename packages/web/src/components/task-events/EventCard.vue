@@ -76,13 +76,13 @@ const dataTone = computed(() => EVENT_CARD_DATA_TONE[props.tone ?? 'neutral'])
 </template>
 
 <style scoped>
-.ec-root {
+/* A rail is a claim on the reader: only a card that carries a real state
+   keeps one. Routine, in-flight and successful cards separate by whitespace,
+   and let their icon alone carry the tone. */
+.ec-root[data-tone='warn'],
+.ec-root[data-tone='err'] {
   border-left: 2px solid var(--tone);
   padding-left: 1ch;
-}
-
-.ec-root[data-tone='idle'] {
-  --tone: var(--line);
 }
 
 .ec-head {

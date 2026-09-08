@@ -15,48 +15,29 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
     <button
       v-for="option in options"
       :key="option"
-      class="qr-opt btn"
+      class="qr-opt btn ghost"
       type="button"
       :disabled="disabled"
       @click="emit('pick', option)"
     >
       {{ G.arrow }} {{ option }}
     </button>
-    <button class="qr-other" type="button" @click="emit('other')">
+    <button class="qr-other btn ghost" type="button" @click="emit('other')">
       {{ t('workspace.quickReplyOther') }}
     </button>
   </div>
 </template>
 
 <style scoped>
-/* Amber: answering IS the pending human action. The kit's own `.qr .btn`
-   look, kept scoped because the option buttons carry their BEM class alone. */
+/* A suggested answer is an offer, not a state: no tone colour, only the
+   kit's ghost button. */
 .qr-opt,
 .qr-other {
-  font: inherit;
-  padding: 2px 2ch;
-  border: 1px solid var(--warn);
-  background: transparent;
-  color: var(--warn);
-  cursor: pointer;
   overflow-wrap: anywhere;
   text-align: left;
 }
 
-.qr-opt:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-
-.qr-opt:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.qr-other {
-  border-color: transparent;
-  color: var(--fg-dim);
-}
-
+.qr-opt:hover:not(:disabled),
 .qr-other:hover {
   color: var(--fg);
 }

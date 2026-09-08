@@ -147,6 +147,16 @@ describe('EventCard tone reaches the rendered DOM (not just the map)', () => {
   test('the neutral card falls back to the plain line color, not to a state color', () => {
     expect(style).toContain("[data-tone='idle']")
   })
+
+  // A rail is a claim on the reader. Routine ('idle'), in-flight and
+  // successful ('ok') cards make none: they separate by whitespace, and the
+  // icon alone keeps their tone.
+  test('only a card carrying a state to act on keeps a rail', () => {
+    expect(style).toContain(`.ec-root[data-tone='warn'],
+.ec-root[data-tone='err'] {
+  border-left: 2px solid var(--tone);`)
+    expect(style.match(/border-left/g)).toHaveLength(1)
+  })
 })
 
 describe('EventCard fold state (fiche 15 section 6: the outcome decides the initial fold)', () => {

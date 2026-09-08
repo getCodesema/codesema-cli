@@ -65,6 +65,8 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 const composerMode = (): ReplyMode | 'question' => (props.questionActive ? 'question' : props.mode)
+
+const canSend = (): boolean => props.draft.trim() !== ''
 </script>
 
 <template>
@@ -89,25 +91,20 @@ const composerMode = (): ReplyMode | 'question' => (props.questionActive ? 'ques
       :data-mode="composerMode()"
       @submit.prevent="emit('send')"
     >
-      <!-- The send sits INSIDE the field box, at its bottom right: one
-           surface, the base.css one, and nothing drawn around it. -->
+      <!-- One frame: the prompt glyph, the field, and the send that appears
+           only once there is something to send. -->
       <div class="cv-reply-field">
+        <span class="cv-reply-prompt" aria-hidden="true">{{ G.arrow }}</span>
         <textarea
           ref="replyInput"
           class="cv-reply-input"
-          :class="{ 'cv-reply-input--waiting': questionActive }"
           :rows="MIN_ROWS"
           :placeholder="placeholder"
           :value="draft"
           @input="onInput"
           @keydown.enter="onKeydown"
         />
-        <button
-          class="cv-reply-send btn primary"
-          :class="{ 'cv-reply-send--waiting': questionActive }"
-          type="submit"
-          :disabled="busy || !draft.trim()"
-        >
+        <button v-if="canSend()" class="cv-reply-send btn primary" type="submit" :disabled="busy">
           <span aria-hidden="true">{{ G.reply }}</span>
           {{ mode === 'queue' ? t('workspace.replyQueueSend') : t('workspace.replySend') }}
         </button>
@@ -125,15 +122,15 @@ const composerMode = (): ReplyMode | 'question' => (props.questionActive ? 'ques
   flex: none;
 }
 
+/* A parked message is not a state the reader must act on: plain meta text. */
 .cv-pending {
   align-items: baseline;
   gap: 1ch;
-  border-left: 3px solid var(--warn);
 }
 
 .cv-pending-label {
   flex: none;
-  color: var(--warn);
+  color: var(--fg-dim);
 }
 
 .cv-pending-text {
@@ -148,45 +145,59 @@ const composerMode = (): ReplyMode | 'question' => (props.questionActive ? 'ques
 }
 
 .cv-reply.composer {
-  grid-template-columns: 1fr;
+  display: block;
+  padding: 0;
+  border-top: none;
 }
 
+/* The frame: one hairline box around the prompt, the field and the send. */
 .cv-reply-field {
-  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 1ch;
   min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  padding: calc(var(--row) / 2) 1ch;
 }
 
-/* The textarea keeps base.css's own surface: no second box around it. The
-   bottom padding is the room the send button stands in. */
+.cv-reply-field:focus-within {
+  border-color: var(--accent);
+}
+
+/* Amber only here: an open question is the one thing blocking the agent. */
+.cv-reply[data-mode='question'] .cv-reply-field {
+  border-color: var(--warn);
+}
+
+.cv-reply-prompt {
+  flex: none;
+  color: var(--fg-muted);
+}
+
 .cv-reply-field .cv-reply-input {
+  flex: 1;
   width: 100%;
   min-width: 0;
   resize: none;
-  padding-bottom: calc(var(--row) + 4px);
-}
-
-/* A live question turns the composer amber: answering unblocks the agent. */
-.cv-reply-input--waiting {
-  border-color: var(--warn);
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0;
 }
 
 .cv-reply-input::placeholder {
-  color: var(--fg-dim);
+  color: var(--fg-muted);
 }
 
 .cv-reply-send {
-  position: absolute;
-  right: 1ch;
-  bottom: calc(var(--row) / 2);
-}
-
-.cv-reply-send--waiting {
-  background: var(--warn);
-  border-color: var(--warn);
+  flex: none;
+  align-self: flex-end;
 }
 
 .cv-reply-hint {
   margin: 0;
+  padding: 2px 1ch 0;
 }
 
 .cv-reply-dead {

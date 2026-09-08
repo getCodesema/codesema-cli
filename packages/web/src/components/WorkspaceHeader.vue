@@ -73,7 +73,7 @@ const emit = defineEmits<{ 'open-oldest-waiting': [] }>()
         <span aria-hidden="true">{{ G.attention }}</span>
         {{ t('workspace.needsYouBadge', { n: needsYou }) }}
       </button>
-      <span class="wh-agents cell">
+      <span class="wh-agents cell" :class="{ 'wh-agents--none': agents === 0 }">
         <span class="wh-agents-dot status" :data-s="agents > 0 ? 'running' : 'idle'" />
         {{ t('workspace.agentsCount', { n: agents }) }}
       </span>
@@ -100,7 +100,20 @@ const emit = defineEmits<{ 'open-oldest-waiting': [] }>()
   justify-content: flex-end;
 }
 
+/* Plain text across the band: the hairline the kit puts between cells would
+   frame facts that are not states. */
+.wh-right .cell {
+  border-left: 0;
+}
+
 .wh-forge {
   cursor: help;
+}
+
+/* An idle desk is not a state to act on: counter and dot go to the quietest
+   grey, and only a running agent brings the dot back. */
+.wh-agents--none,
+.wh-agents--none .wh-agents-dot[data-s='idle']::before {
+  color: var(--fg-muted);
 }
 </style>

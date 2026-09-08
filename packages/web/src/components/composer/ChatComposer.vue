@@ -228,6 +228,8 @@ function toggleAttach(): void {
 
 const isSendDisabled = computed(() => sendDisabled(props.modelValue, props.sending))
 
+const hasText = computed(() => props.modelValue.trim() !== '')
+
 // ── Status hint (section 2): the placeholder IS the state display ─────────
 
 const HINT_KEY: Record<Exclude<ComposerHintState, null>, string> = {
@@ -264,83 +266,92 @@ defineExpose({ focus })
     :class="{ 'cc-root--temporary': mode === 'temporary', 'cc-root--private': mode === 'private' }"
     :data-mode="mode"
   >
-    <div
-      class="cc-handle"
-      :class="{ 'cc-handle--active': dragging }"
-      role="separator"
-      aria-orientation="horizontal"
-      tabindex="0"
-      :aria-label="t('composer.resizeHandleAria')"
-      @pointerdown="onHandlePointerDown"
-      @pointermove="onHandlePointerMove"
-      @pointerup="onHandlePointerUp"
-      @pointercancel="onHandlePointerUp"
-      @dblclick="resetHeight"
-      @keydown="onHandleKeydown"
-    >
-      <span class="cc-handle-bar" aria-hidden="true" />
+    <div class="cc-box">
+      <div
+        class="cc-handle"
+        :class="{ 'cc-handle--active': dragging }"
+        role="separator"
+        aria-orientation="horizontal"
+        tabindex="0"
+        :aria-label="t('composer.resizeHandleAria')"
+        @pointerdown="onHandlePointerDown"
+        @pointermove="onHandlePointerMove"
+        @pointerup="onHandlePointerUp"
+        @pointercancel="onHandlePointerUp"
+        @dblclick="resetHeight"
+        @keydown="onHandleKeydown"
+      >
+        <span class="cc-handle-bar" aria-hidden="true" />
+      </div>
+
+      <div class="cc-field">
+        <span class="cc-prompt" aria-hidden="true">{{ G.arrow }}</span>
+        <textarea
+          ref="textareaRef"
+          class="cc-textarea"
+          :value="modelValue"
+          :placeholder="hintText"
+          spellcheck="true"
+          @input="onInput"
+          @paste="onPaste"
+          @keydown="onKeydown"
+        />
+      </div>
+
+      <div class="cc-toolbar">
+        <div class="cc-toolbar-start">
+          <button
+            type="button"
+            class="cc-tool cc-tool--attach"
+            :class="{ 'cc-tool--open': attachOpen }"
+            :aria-expanded="attachOpen"
+            :aria-label="t('composer.attachAria')"
+            :title="t('composer.attachAria')"
+            @click="toggleAttach"
+          >
+            <Plus class="cc-tool-icon" aria-hidden="true" />
+          </button>
+          <!-- Dictation: measured slot, no behavior yet (fiche 7.3). -->
+          <button
+            type="button"
+            class="cc-tool cc-tool--placeholder"
+            disabled
+            :aria-label="t('composer.micAria')"
+            :title="t('composer.micAria')"
+          >
+            <Mic class="cc-tool-icon" aria-hidden="true" />
+          </button>
+          <!-- Text improvement: measured slot, no behavior yet (fiche 7.3). -->
+          <button
+            type="button"
+            class="cc-tool cc-tool--placeholder"
+            disabled
+            :aria-label="t('composer.improveAria')"
+            :title="t('composer.improveAria')"
+          >
+            <Sparkles class="cc-tool-icon cc-tool-icon--sm" aria-hidden="true" />
+          </button>
+        </div>
+        <div class="cc-toolbar-end">
+          <button
+            v-if="hasText"
+            type="button"
+            class="cc-send btn primary"
+            :disabled="isSendDisabled"
+            :aria-label="t('composer.sendAria')"
+            :title="t('composer.sendAria')"
+            @click="trySend"
+          >
+            <span aria-hidden="true">{{ G.reply }}</span> {{ t('composer.sendAria') }}
+          </button>
+        </div>
+      </div>
     </div>
 
-    <textarea
-      ref="textareaRef"
-      class="cc-textarea"
-      :value="modelValue"
-      :placeholder="hintText"
-      spellcheck="true"
-      @input="onInput"
-      @paste="onPaste"
-      @keydown="onKeydown"
-    />
-
-    <div class="cc-toolbar">
-      <div class="cc-toolbar-start">
-        <button
-          type="button"
-          class="cc-tool cc-tool--attach"
-          :class="{ 'cc-tool--open': attachOpen }"
-          :aria-expanded="attachOpen"
-          :aria-label="t('composer.attachAria')"
-          :title="t('composer.attachAria')"
-          @click="toggleAttach"
-        >
-          <Plus class="cc-tool-icon" aria-hidden="true" />
-        </button>
-        <!-- Dictation: measured slot, no behavior yet (fiche 7.3). -->
-        <button
-          type="button"
-          class="cc-tool cc-tool--placeholder"
-          disabled
-          :aria-label="t('composer.micAria')"
-          :title="t('composer.micAria')"
-        >
-          <Mic class="cc-tool-icon" aria-hidden="true" />
-        </button>
-        <!-- Text improvement: measured slot, no behavior yet (fiche 7.3). -->
-        <button
-          type="button"
-          class="cc-tool cc-tool--placeholder"
-          disabled
-          :aria-label="t('composer.improveAria')"
-          :title="t('composer.improveAria')"
-        >
-          <Sparkles class="cc-tool-icon cc-tool-icon--sm" aria-hidden="true" />
-        </button>
-      </div>
-      <div class="cc-toolbar-end">
-        <button
-          type="button"
-          class="cc-send btn primary"
-          :disabled="isSendDisabled"
-          :aria-label="t('composer.sendAria')"
-          :title="t('composer.sendAria')"
-          @click="trySend"
-        >
-          <span aria-hidden="true">{{ G.reply }}</span> {{ t('composer.sendAria') }}
-        </button>
-      </div>
-    </div>
-
-    <p class="cc-hint hint">{{ t('composer.hintSend') }}</p>
+    <p class="cc-hint hint">
+      {{ t('composer.hintSend')
+      }}<span v-if="mode !== 'clean'" class="cc-mode"> {{ G.sep }} {{ mode }}</span>
+    </p>
   </div>
 </template>
 
@@ -349,16 +360,21 @@ defineExpose({ focus })
   display: flex;
   flex-direction: column;
   padding: 0;
-  border-left: 2px solid transparent;
+  border: none;
+  background: transparent;
 }
 
-/* The left rule alone carries the mode: a colour, no separate badge. */
-.cc-root--temporary {
-  border-left-color: var(--warn);
+/* -- The frame: one hairline box, nothing raised inside it -------------- */
+.cc-box {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  padding: calc(var(--row) / 2) 1ch;
 }
 
-.cc-root--private {
-  border-left-color: var(--info);
+.cc-box:focus-within {
+  border-color: var(--accent);
 }
 
 /* -- Resize handle: invisible at rest, drawn on hover ------------------- */
@@ -384,9 +400,22 @@ defineExpose({ focus })
   background: var(--line);
 }
 
-/* -- Textarea ---------------------------------------------------------- */
-.cc-textarea {
+/* -- Prompt glyph and textarea, on one line ----------------------------- */
+.cc-field {
   flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 1ch;
+  min-width: 0;
+}
+
+.cc-prompt {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.cc-textarea {
+  flex: 1;
   width: 100%;
   min-width: 0;
   min-height: calc(var(--row) * 2);
@@ -397,12 +426,12 @@ defineExpose({ focus })
   background: transparent;
   color: var(--fg);
   font: inherit;
-  padding: calc(var(--row) / 2) 1ch 0;
+  padding: 0;
   overflow-y: auto;
 }
 
 .cc-textarea::placeholder {
-  color: var(--fg-dim);
+  color: var(--fg-muted);
 }
 
 /* -- Toolbar: two clusters, one text line tall -------------------------- */
@@ -412,7 +441,8 @@ defineExpose({ focus })
   align-items: center;
   justify-content: space-between;
   gap: 1ch;
-  padding: 2px 1ch calc(var(--row) / 2);
+  padding: 2px 0 0;
+  min-height: calc(var(--row) + 4px);
 }
 
 .cc-toolbar-start,
@@ -474,9 +504,14 @@ defineExpose({ focus })
   flex: none;
 }
 
-/* -- Shortcut line, under the field ------------------------------------- */
+/* -- Shortcut line, under the frame ------------------------------------- */
 .cc-hint {
   margin: 0;
-  padding: 0 1ch calc(var(--row) / 2);
+  padding: 2px 1ch 0;
+}
+
+/* The mode is a word on the hint line, never a coloured rail. */
+.cc-mode {
+  color: var(--fg-dim);
 }
 </style>

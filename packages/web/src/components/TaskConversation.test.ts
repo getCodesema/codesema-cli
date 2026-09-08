@@ -470,12 +470,12 @@ describe('deleting the branch left the header for the tail of the thread', () =>
   })
 })
 
-describe('the composer carries its send inside the field', () => {
-  test('the send button sits in the field box and the shortcut has its own line', async () => {
+describe('the composer is a frame with a prompt, and nothing else until you type', () => {
+  test('an empty draft shows the prompt glyph and the shortcut line, no send button', async () => {
     const html = await renderConversation({ record: { status: 'waiting_for_you' } })
     const field = html.slice(html.indexOf('cv-reply-field'), html.indexOf('cv-reply-hint'))
-    expect(field).toContain('cv-reply-send btn primary')
-    expect(field).toContain(t('workspace.replySend'))
+    expect(field).toContain('cv-reply-prompt')
+    expect(field).not.toContain('cv-reply-send')
     expect(html).toContain(t('composer.hintSend'))
   })
 })

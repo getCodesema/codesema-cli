@@ -108,7 +108,7 @@ function dismissProposal(): void {
   <div class="cv-checks">
     <div class="cv-checks-bar">
       <template v-if="checks">
-        <span class="cv-checks-badge badge" :data-tone="tone">
+        <span class="cv-checks-badge" :data-tone="tone">
           <span v-if="running" class="cv-checks-dot status" data-tone="info" aria-hidden="true" />
           {{ t(CHECKS_STATUS_KEY[checks.status]) }}
         </span>
@@ -347,8 +347,17 @@ function dismissProposal(): void {
   flex-wrap: wrap;
 }
 
+/* Plain words, not a chip: the verdict colours itself only when it IS one —
+   idle and running stay dim like the rest of the bar. */
 .cv-checks-badge {
   font-weight: 700;
+  color: var(--fg-dim);
+}
+
+.cv-checks-badge[data-tone='ok'],
+.cv-checks-badge[data-tone='warn'],
+.cv-checks-badge[data-tone='err'] {
+  color: var(--tone);
 }
 
 .cv-checks-dot {

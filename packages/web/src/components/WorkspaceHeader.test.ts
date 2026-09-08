@@ -169,6 +169,28 @@ describe('the band segment says nothing the rail already says', () => {
     expect(idle).toContain('data-s="idle"')
   })
 
+  // An idle desk is not a state: the counter and its dot drop to the quietest
+  // grey, and only a running agent brings the dot's colour back.
+  test('a zero counter is muted, a live one is not', async () => {
+    const idle = await renderHeader(info({}))
+    expect(idle).toContain('wh-agents--none')
+    const WorkspaceHeader = (await import('./WorkspaceHeader.vue')).default
+    const busy = await renderToString(createSSRApp(WorkspaceHeader, { needsYou: 0, agents: 2 }))
+    expect(busy).not.toContain('wh-agents--none')
+  })
+
+  test('the band carries no cell hairlines: identity is text, never a box', () => {
+    const SOURCE = readFileSync(join(import.meta.dir, 'WorkspaceHeader.vue'), 'utf8')
+    expect(SOURCE).toContain('.wh-right .cell {')
+    expect(SOURCE.slice(SOURCE.indexOf('.wh-right .cell {'))).toContain('border-left: 0;')
+  })
+
+  // The bell is the ONE amber in the band, and only while it counts someone.
+  test('no needs-you bell at all when nobody is waited on', async () => {
+    const html = await renderHeader(info({}))
+    expect(html).not.toContain('wh-bell')
+  })
+
   test('the segment is one band line under one hairline, never a frame', () => {
     const SOURCE = readFileSync(join(import.meta.dir, 'WorkspaceHeader.vue'), 'utf8')
     const rule = SOURCE.slice(SOURCE.indexOf('.wh-root {'), SOURCE.indexOf('.wh-gap {'))

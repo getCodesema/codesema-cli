@@ -93,23 +93,28 @@ const showFix = computed(() => (count.value ?? 0) > 0 || props.task.status === '
 </template>
 
 <style scoped>
-/* Not a box: the verdict's own colour on a left rail, like every other block
-   of the thread. */
-.tvr-root {
-  padding-left: 1ch;
-  border-left: 2px solid var(--line);
-}
-
-.tvr-root[data-v='go'] {
-  border-left-color: var(--ok);
-}
-
+/* A verdict that passed asks nothing of the reader: it separates by
+   whitespace like the rest of the thread. Only a verdict that does not pass
+   keeps a rail, and only that one keeps the box around its own word. */
 .tvr-root[data-v='check'] {
-  border-left-color: var(--warn);
+  padding-left: 1ch;
+  border-left: 2px solid var(--warn);
 }
 
 .tvr-root[data-v='stop'] {
-  border-left-color: var(--err);
+  padding-left: 1ch;
+  border-left: 2px solid var(--err);
+}
+
+.tvr-verdict {
+  border: 0;
+  padding: 0;
+}
+
+.tvr-root[data-v='check'] .tvr-verdict,
+.tvr-root[data-v='stop'] .tvr-verdict {
+  border: 1px solid currentColor;
+  padding: 0 1ch;
 }
 
 .tvr-head {

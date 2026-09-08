@@ -294,12 +294,10 @@ watch(
   color: var(--err);
 }
 
-.cv-tools--live {
-  border-color: var(--info);
-}
-
+/* The blinking status dot is the whole signal of a run in flight: the label
+   beside it stays as dim as any other folded line. */
 .cv-tools--live .cv-tools-label {
-  color: var(--info);
+  color: var(--fg-dim);
 }
 
 .cv-tools-summary {
@@ -313,9 +311,9 @@ watch(
 }
 
 .cv-tools-body {
-  border-top: 1px solid var(--line);
-  padding: calc(var(--row) / 2) 0;
+  padding: calc(var(--row) / 2) 0 0;
   display: flex;
   flex-direction: column;
+  gap: calc(var(--row) / 2);
 }
 </style>

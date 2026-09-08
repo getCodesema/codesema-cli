@@ -9,6 +9,7 @@ import { describe, expect, test } from 'bun:test'
 import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 
 Bun.plugin({
@@ -71,11 +72,16 @@ describe('ChatComposer: structure', () => {
     expect(html).toContain('>fix the flaky test</textarea>')
   })
 
-  test('renders the send button, the attach button, and the two inert placeholder tools', async () => {
+  test('renders the attach button and the two inert placeholder tools', async () => {
     const html = await render(BASE)
-    expect(html).toContain('class="cc-send btn primary"')
     expect(html).toContain('cc-tool--attach')
     expect(html).toContain('cc-tool--placeholder')
+  })
+
+  test('the frame carries the prompt glyph next to the textarea', async () => {
+    const html = await render(BASE)
+    expect(html).toContain('cc-prompt')
+    expect(html).toContain(G.arrow)
   })
 })
 
@@ -133,7 +139,20 @@ describe('ChatComposer: the box wears the shared kit surface', () => {
   })
 })
 
-describe('ChatComposer: mode carries the filet color (fiche section 1)', () => {
+describe('ChatComposer: the mode is a word on the hint line, not a coloured rail', () => {
+  test('clean mode adds no word to the hint line', async () => {
+    const html = await render({ ...BASE, mode: 'clean' })
+    expect(html).not.toContain('cc-mode')
+  })
+
+  test('a non-clean mode names itself next to the shortcut', async () => {
+    const html = await render({ ...BASE, mode: 'private' })
+    expect(html).toContain('cc-mode')
+    expect(html).toContain(`${G.sep} private`)
+  })
+})
+
+describe('ChatComposer: mode still marks the root for the caller', () => {
   test('clean mode adds neither modifier class', async () => {
     const html = await render({ ...BASE, mode: 'clean' })
     expect(html).not.toContain('cc-root--temporary')
@@ -153,15 +172,15 @@ describe('ChatComposer: mode carries the filet color (fiche section 1)', () => {
   })
 })
 
-describe('ChatComposer: the labelled send button (fiche section 3)', () => {
-  test('disabled with empty text', async () => {
+describe('ChatComposer: the send button only exists once there is text', () => {
+  test('absent with empty text', async () => {
     const html = await render({ ...BASE, modelValue: '' })
-    expect(openingTag(html, 'class="cc-send btn primary"')).toContain('disabled')
+    expect(html).not.toContain('cc-send')
   })
 
-  test('disabled with whitespace-only text', async () => {
+  test('absent with whitespace-only text', async () => {
     const html = await render({ ...BASE, modelValue: '   ' })
-    expect(openingTag(html, 'class="cc-send btn primary"')).toContain('disabled')
+    expect(html).not.toContain('cc-send')
   })
 
   test('enabled with real text and nothing in flight', async () => {
@@ -175,7 +194,7 @@ describe('ChatComposer: the labelled send button (fiche section 3)', () => {
   })
 
   test('carries the send aria-label', async () => {
-    const html = await render(BASE)
+    const html = await render({ ...BASE, modelValue: 'ship it' })
     expect(openingTag(html, 'class="cc-send btn primary"')).toContain(
       `aria-label="${t('composer.sendAria')}"`,
     )

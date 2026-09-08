@@ -1,14 +1,15 @@
 <script setup lang="ts">
-// The conversation's header: state glyph + short label, the prompt sentence
-// under it, the offers that move the task forward (interrupt, resume, ship),
-// the identity chips (project · branch, isolation, status phrase, chronos),
-// the blocker's own sentence, and the tab bar. Deleting the worktree is NOT
+// The conversation's header: two lines. The first carries the state dot, the
+// short label and the offers that move the task forward (interrupt, resume,
+// ship). The second is ONE meta line of plain text — phrase, project, branch,
+// isolation, chronos — separated by `G.sep`, with the asked sentence folded
+// behind a toggle. Only a state a human must act on takes a colour: the dot
+// always, the phrase when it is warn or err. Deleting the worktree is NOT
 // here: an irreversible action lives at the tail of the thread. The state is
 // carried by `data-tone`, never by an inline colour.
 import { computed, ref } from 'vue'
-import { isolationBadge } from '../../composables/useIsolation'
+import { conversationMeta } from '../../composables/useConversationMeta'
 import {
-  formatDuration,
   reasonDetailText,
   resumeStateOf,
   statusPhraseKey,
@@ -52,7 +53,6 @@ const phraseKey = computed(() =>
 )
 // The phrase says WHAT holds the conversation; this says what to DO about it.
 const reasonDetail = computed(() => reasonDetailText(record.value))
-const isolation = computed(() => isolationBadge(record.value))
 const attachments = computed(() => record.value.attachments ?? [])
 // Offering a repository this conversation already holds would be an action
 // with nothing to do.
@@ -126,18 +126,38 @@ async function doInterrupt(): Promise<void> {
   await run(props.interrupt)
 }
 
-const work = computed(() => formatDuration(record.value.work_ms))
-const wait = computed(() =>
-  record.value.wait_ms > 0 ? formatDuration(record.value.wait_ms) : null,
+// A phrase is only coloured when it names something a human must act on or
+// has been given; 'ok', 'idle' and 'info' leave the dot as the only colour.
+const phraseTone = computed(() =>
+  visual.value.tone === 'warn' || visual.value.tone === 'err' ? visual.value.tone : null,
 )
+
+const promptOpen = ref(false)
+
+const metaItems = computed(() =>
+  conversationMeta(record.value, props.projectName, props.projectKind),
+)
+
+type TabLabel = { name: string; count: string | null }
+
+// The counter travels glued to its label ('Diff · 3 files', 'Checks ✓'); the
+// first space is the seam, and only the tail is allowed a tone.
+function splitTabLabel(text: string): TabLabel {
+  const seam = text.indexOf(' ')
+  return seam === -1
+    ? { name: text, count: null }
+    : { name: text.slice(0, seam), count: text.slice(seam + 1) }
+}
+
+const diffTab = computed(() => splitTabLabel(props.diffTabLabel))
+const checksTab = computed(() => splitTabLabel(props.checksTabText))
 </script>
 
 <template>
   <header class="cv-head">
     <div class="cv-conv-h conv-h">
       <div class="cv-title-row">
-        <span v-if="visual.attention" class="cv-warn" aria-hidden="true">{{ G.attention }}</span>
-        <span v-else class="cv-dot status" :data-tone="visual.tone" aria-hidden="true" />
+        <span class="cv-dot status" :data-tone="visual.tone" aria-hidden="true" />
         <h1 class="cv-title">{{ label }}</h1>
       </div>
       <span class="cv-actions act">
@@ -169,25 +189,25 @@ const wait = computed(() =>
         </button>
       </span>
 
-      <!-- The label above is a name; this is the sentence that was asked. -->
-      <p class="cv-full-title">{{ record.title }}</p>
-
+      <!-- One meta line, plain text: what holds the conversation, then where
+           it happens and how long it took. -->
       <div class="cv-sub chips">
+        <span class="cv-phrase" :data-tone="phraseTone">{{ t(phraseKey) }}</span>
+
+        <template v-for="item in metaItems" :key="item.key">
+          <span class="cv-sep" aria-hidden="true">{{ G.sep }}</span>
+          <span class="cv-chip" :class="`cv-chip--${item.kind}`" :title="item.hint ?? undefined">
+            {{ item.text }}
+          </span>
+        </template>
+
+        <!-- Still offered once some are attached: a scratch conversation can
+             take more than one. -->
         <template v-if="projectKind === 'scratch'">
-          <span v-if="attachments.length === 0" class="cv-chip">
-            {{ t('workspace.noRepoAttached') }}
-          </span>
-          <template v-else>
-            <span v-for="attachment in attachments" :key="attachment.project_id" class="cv-chip">
-              {{ attachment.name }} · <span aria-hidden="true">{{ G.branch }}</span>
-              {{ attachment.branch }}
-            </span>
+          <template v-if="repoProjects.length === 0">
+            <span class="cv-sep" aria-hidden="true">{{ G.sep }}</span>
+            <span class="cv-chip">{{ t('workspace.attachRepoNone') }}</span>
           </template>
-          <!-- Still offered once some are attached: a scratch conversation can
-               take more than one. -->
-          <span v-if="repoProjects.length === 0" class="cv-chip">
-            {{ t('workspace.attachRepoNone') }}
-          </span>
           <template v-else-if="attachableProjects.length > 0">
             <select
               v-model="attachSelection"
@@ -214,25 +234,21 @@ const wait = computed(() =>
             </button>
           </template>
         </template>
-        <span v-else class="cv-chip">
-          {{ projectName }} · <span aria-hidden="true">{{ G.branch }}</span>
-          {{ record.branch || record.base }}
-        </span>
-        <!-- Isolation: what contains this conversation's agent. The tooltip
-             carries the guarantee, so the chip itself stays one word. -->
-        <span
-          class="cv-chip cv-iso"
-          :class="`cv-iso--${isolation.isolation}`"
-          :title="t(isolation.hintKey)"
+
+        <!-- The label on line 1 is a name; the sentence that was asked is one
+             click away rather than in front of the first message. -->
+        <button
+          class="cv-prompt-toggle"
+          type="button"
+          :aria-expanded="promptOpen"
+          @click="promptOpen = !promptOpen"
         >
-          <span aria-hidden="true">{{ isolation.glyph }}</span> {{ t(isolation.labelKey) }}
-        </span>
-        <span class="cv-phrase" :data-tone="visual.tone">{{ t(phraseKey) }}</span>
-        <span class="cv-chrono">
-          <span>{{ t('workspace.workTime', { t: work }) }}</span>
-          <span v-if="wait" class="cv-wait">{{ t('workspace.waitTime', { t: wait }) }}</span>
-        </span>
+          <span aria-hidden="true">{{ promptOpen ? G.expand : G.collapse }}</span>
+          {{ promptOpen ? t('workspace.hidePrompt') : t('workspace.showPrompt') }}
+        </button>
       </div>
+
+      <p v-show="promptOpen" class="cv-full-title">{{ record.title }}</p>
 
       <p v-if="reasonDetail" class="cv-reason">{{ reasonDetail }}</p>
       <p v-if="shipNotice" class="cv-notice">{{ shipNotice }}</p>
@@ -259,15 +275,21 @@ const wait = computed(() =>
         :title="tabs[1]?.enabled ? undefined : t('workspace.noBranchYet')"
         @click="emit('pick-tab', 'diff')"
       >
-        {{ diffTabLabel }}
+        {{ diffTab.name }}
+        <span v-if="diffTab.count" class="cv-tab-count">{{ diffTab.count }}</span>
       </button>
       <button
         class="cv-tab tab"
-        :class="[checksToneClass, { 'cv-tab--active': tab === 'checks' }]"
+        :class="{ 'cv-tab--active': tab === 'checks' }"
         type="button"
         @click="emit('pick-tab', 'checks')"
       >
-        {{ checksTabText }}
+        {{ checksTab.name }}
+        <!-- The counter is the only part allowed a colour, and only when the
+             checks actually failed or the runner broke. -->
+        <span v-if="checksTab.count" class="cv-tab-count" :class="checksToneClass">{{
+          checksTab.count
+        }}</span>
       </button>
     </nav>
   </header>
@@ -293,13 +315,9 @@ const wait = computed(() =>
   min-width: 0;
 }
 
-.cv-warn {
-  flex: none;
-  color: var(--warn);
-}
-
 /* The dot is the kit `.status` bullet: the tone colours it, and `info`
-   blinks — the machine is the only thing that moves. */
+   blinks — the machine is the only thing that moves. On an ok/idle/busy
+   header it is the ONLY colour on the line. */
 .cv-dot {
   flex: none;
 }
@@ -308,6 +326,7 @@ const wait = computed(() =>
   margin: 0;
   font-size: 18px;
   font-weight: 700;
+  color: var(--fg);
   min-width: 0;
   flex: 1;
   overflow: hidden;
@@ -337,17 +356,23 @@ const wait = computed(() =>
   overflow-wrap: anywhere;
 }
 
-.cv-sub {
+/* One line of meta, one grey: the separators do the work a box used to. */
+.cv-sub.chips {
   align-items: baseline;
+  gap: 1ch;
   font-size: 12px;
+  color: var(--fg-muted);
 }
 
-/* Plain text, not a pill: the `.chips` gap already separates them. */
 .cv-chip {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cv-sep {
+  color: var(--fg-muted);
 }
 
 /* Attaching a repo is an ordinary action, not a state: no colour. */
@@ -363,39 +388,37 @@ const wait = computed(() =>
   padding: 0 1ch;
 }
 
-/* The one chip that stays a badge: isolation is a guarantee, and the kit
-   draws it with a hairline in its own tone. */
-.cv-iso {
+/* Identity, not a state: the guarantee lives in the tooltip, never in a box. */
+.cv-chip--iso {
   cursor: help;
-  padding: 0 1ch;
-  border: 1px solid currentColor;
 }
 
-.cv-iso--container {
-  color: var(--ok);
-  border-color: var(--ok);
-}
-
-.cv-iso--policy {
-  color: var(--fg-dim);
-}
-
+/* The phrase takes the tone ONLY when a human is waited on or something
+   failed; every other state leaves the dot as the single colour. */
 .cv-phrase {
-  color: var(--tone, var(--fg-dim));
+  color: var(--fg-muted);
 }
 
-.cv-phrase[data-tone='idle'] {
-  color: var(--fg-dim);
+.cv-phrase[data-tone='warn'],
+.cv-phrase[data-tone='err'] {
+  color: var(--tone);
 }
 
-.cv-chrono {
-  display: flex;
-  gap: 2ch;
+.cv-chip--chrono {
   font-variant-numeric: tabular-nums;
-  color: var(--fg-dim);
 }
 
-.cv-wait {
+.cv-prompt-toggle {
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--fg-muted);
+}
+
+.cv-prompt-toggle:hover {
   color: var(--fg-dim);
 }
 
@@ -405,13 +428,13 @@ const wait = computed(() =>
   color: var(--warn);
 }
 
-/* The refusal's technical annex: the phrase above already said it in the
-   reader's language, so this one stays quiet and wraps rather than shouts. */
+/* The refusal's own sentence: a real state, so it keeps its amber — the
+   phrase above names it, this one says what to do about it. */
 .cv-reason {
   grid-column: 1 / -1;
   margin: 0;
   font-size: 12px;
-  color: var(--fg-dim);
+  color: var(--warn);
   overflow-wrap: anywhere;
 }
 
@@ -428,6 +451,7 @@ const wait = computed(() =>
 
 .cv-tab {
   font: inherit;
+  color: var(--fg-dim);
   background: none;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -450,18 +474,20 @@ const wait = computed(() =>
   color: var(--fg-muted);
 }
 
-/* The Checks label IS the semaphore: its glyph and colour carry the state
-   (defined after --active with doubled specificity so the tone wins). */
-.cv-tab.cv-tab--checks-pass {
-  color: var(--ok);
+/* A count is never a state: it stays the quietest grey, whichever tab is up
+   (doubled specificity so --active does not pull it back to --fg). */
+.cv-tab .cv-tab-count {
+  font-weight: 400;
+  color: var(--fg-muted);
 }
 
-.cv-tab.cv-tab--checks-fail {
+/* …the one exception being a failure, which is a state the reader must act
+   on: a broken runner is amber, failed checks are red. */
+.cv-tab .cv-tab-count.cv-tab--checks-fail {
   color: var(--err);
 }
 
-.cv-tab.cv-tab--checks-run,
-.cv-tab.cv-tab--checks-warn {
+.cv-tab .cv-tab-count.cv-tab--checks-warn {
   color: var(--warn);
 }
 </style>

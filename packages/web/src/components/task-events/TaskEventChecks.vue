@@ -45,10 +45,7 @@ const text = computed(() =>
 <template>
   <div class="tvc-line check-row" :data-s="rowStatus" :title="exact">
     <span class="tvc-dot g" aria-hidden="true">{{ glyph }}</span>
-    <span
-      class="tvc-text"
-      :class="{ 'tvc-text--go': line.tone === 'go', 'tvc-text--stop': line.tone === 'stop' }"
-    >
+    <span class="tvc-text" :class="{ 'tvc-text--stop': line.tone === 'stop' }">
       {{ text }}
     </span>
     <span v-if="ctx.showTime && stamp" class="tvc-time">{{ stamp }}</span>
@@ -69,11 +66,7 @@ const text = computed(() =>
   overflow-wrap: anywhere;
 }
 
-/* The verdict wears its semaphore color: readable at a glance in the thread. */
-.tvc-text--go {
-  color: var(--ok);
-}
-
+/* Only a failure colours its own words; a pass is said by the glyph alone. */
 .tvc-text--stop {
   color: var(--err);
 }

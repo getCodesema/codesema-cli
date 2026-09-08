@@ -291,6 +291,8 @@ const en = {
     'Stopped after the agent had answered: nothing to restart. Send a message to continue.',
   'workspace.ship': 'Confirm and ship',
   'workspace.shipSoon': 'Shipping lands in an upcoming version: the review verdict is saved.',
+  'workspace.showPrompt': 'What was asked',
+  'workspace.hidePrompt': 'Hide what was asked',
   'workspace.replyPlaceholder': 'Answer the agent…',
   'workspace.replyQueuePlaceholder': 'Prepare your next instruction…',
   'workspace.replySend': 'Send',
@@ -1172,6 +1174,8 @@ const fr: Record<MessageKey, string> = {
   'workspace.ship': 'Confirmer et publier',
   'workspace.shipSoon':
     'La publication arrive dans une prochaine version : le verdict de review est enregistré.',
+  'workspace.showPrompt': 'Ce qui a été demandé',
+  'workspace.hidePrompt': 'Masquer ce qui a été demandé',
   'workspace.replyPlaceholder': "Réponds à l'agent…",
   'workspace.replyQueuePlaceholder': 'Prépare ta prochaine consigne…',
   'workspace.replySend': 'Envoyer',

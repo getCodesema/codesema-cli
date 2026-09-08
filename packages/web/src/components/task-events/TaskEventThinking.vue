@@ -166,7 +166,7 @@ onUnmounted(clearIdleTimer)
    "toujours en cours"), the one blink the kit allows on an in-progress dot. */
 .tvth-dot {
   align-self: center;
-  color: var(--warn);
+  color: var(--info);
   animation: blink 1.2s steps(2) infinite;
 }
 
@@ -207,8 +207,6 @@ onUnmounted(clearIdleTimer)
 
 .tvth-body {
   margin: calc(var(--row) / 2) 0 0 3ch;
-  padding-left: 1ch;
-  border-left: 2px solid var(--line);
   max-height: calc(var(--row) * 16);
   overflow-y: auto;
 }
