@@ -14,7 +14,7 @@ export type PilotPrefs = {
 }
 
 export const DEFAULT_PILOT_PREFS: PilotPrefs = {
-  shell: 'pilot',
+  shell: 'classic',
 }
 
 export const PILOT_PREFS_STORAGE_KEY = 'codesema.pilot.prefs'
