@@ -167,10 +167,10 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
     expect(SOURCE).not.toContain('MobileThread')
   })
 
-  test('the centred stage is one column, capped and centred, never a grid template', () => {
+  test('the stage is one full-width column, never a grid template', () => {
     const styleBlock = SOURCE.slice(SOURCE.indexOf('<style'), SOURCE.lastIndexOf('</style>'))
-    expect(styleBlock).toContain('max-width: 100ch;')
-    expect(styleBlock).toContain('margin-inline: auto;')
+    expect(styleBlock).not.toContain('max-width: 100ch;')
+    expect(styleBlock).toContain('.pv-thread {\n  flex: 1;\n  width: 100%;')
     expect(styleBlock).toContain('width: 30ch;')
     expect(styleBlock).not.toContain('grid-template-columns')
   })

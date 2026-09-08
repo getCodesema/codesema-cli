@@ -306,15 +306,13 @@ function onPick(option: string): void {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: var(--row) 2ch;
+  padding: 0;
 }
 
 .pv-thread {
   flex: 1;
   width: 100%;
-  max-width: 100ch;
   min-height: 0;
-  margin-inline: auto;
 }
 
 .pv-empty {
