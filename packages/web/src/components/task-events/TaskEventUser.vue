@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// User prompt in the thread, componentised (fiche 12 section 2): a
-// surface-background bubble, right-aligned, no avatar — the dissymmetry with
-// the assistant's un-bubbled text IS the point the fiche makes there.
+// User prompt in the thread, componentised (fiche 12 section 2): an
+// accent-railed block, right-aligned, no avatar — the dissymmetry with the
+// assistant's plain text IS the point the fiche makes there.
 //
 // Rendered through the SAME markdown path as the assistant's own message
 // (see TaskEventMessage.vue): today this text renders as a raw <p>, so a
@@ -34,10 +34,8 @@ const html = computed(() => renderMarkdown(props.text))
 
 .tvu-bubble {
   margin: 0;
-  padding: calc(var(--row) / 2) 2ch;
-  border: 1px solid var(--line);
+  padding-left: 1ch;
   border-left: 2px solid var(--accent);
-  background: var(--bg-raised);
   color: var(--fg);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -89,7 +87,7 @@ const html = computed(() => renderMarkdown(props.text))
 
 .tvu-md :deep(pre) {
   padding: calc(var(--row) / 2) 1ch;
-  border: 1px solid var(--line);
+  border-left: 2px solid var(--line);
   background: var(--bg-raised);
   overflow-x: auto;
 }

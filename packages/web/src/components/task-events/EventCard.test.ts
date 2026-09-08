@@ -133,10 +133,15 @@ describe('EventCard tone reaches the rendered DOM (not just the map)', () => {
   // The colors themselves now come from kit.css's `[data-tone]` -> `--tone`,
   // so what this component still owns is READING that variable: a border and
   // an icon painted with `var(--tone)`, and never a hex literal of its own.
-  test('the border and the icon are painted from var(--tone), not from a local palette', () => {
-    expect(style).toContain('border: 1px solid var(--tone);')
+  test('the rail and the icon are painted from var(--tone), not from a local palette', () => {
+    expect(style).toContain('border-left: 2px solid var(--tone);')
     expect(style).toContain('color: var(--tone);')
     expect(style).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+  })
+
+  test('the card is a rail, not a box: no frame and no surface wash of its own', () => {
+    expect(style).not.toContain('border: 1px solid')
+    expect(style).not.toContain('var(--bg-raised)')
   })
 
   test('the neutral card falls back to the plain line color, not to a state color', () => {

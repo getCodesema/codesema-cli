@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Agent message in the thread, maquette form: a mono meta line ("AGENT ·
-// il y a X") over a discreet warm bubble; `inline code` spans render mono.
+// il y a X") over plain text; `inline code` spans render mono.
 // This is what the agent SAID — body text, not a journal line.
 import { computed } from 'vue'
 import { eventSummary, firstString, timeAgo } from '../../composables/useTaskBoard'
@@ -51,15 +51,12 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 
 .tvm-bubble {
   margin: 0;
-  padding: calc(var(--row) / 2) 1ch;
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
   color: var(--fg);
   overflow-wrap: anywhere;
   min-width: 0;
 }
 
-/* Rendered markdown: quiet document rhythm inside a chat bubble. */
+/* Rendered markdown: quiet document rhythm, no bubble around it. */
 .tvm-md :deep(p),
 .tvm-md :deep(ul),
 .tvm-md :deep(ol),
@@ -103,7 +100,7 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 
 .tvm-md :deep(pre) {
   padding: calc(var(--row) / 2) 1ch;
-  border: 1px solid var(--line);
+  border-left: 2px solid var(--line);
   background: var(--bg-raised);
   overflow-x: auto;
 }

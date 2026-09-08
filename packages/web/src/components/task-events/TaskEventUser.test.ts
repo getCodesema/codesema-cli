@@ -105,8 +105,14 @@ describe('TaskEventUser geometry follows the kit, not a bubble of its own', () =
   )
   const style = source.slice(source.indexOf('<style'))
 
-  test('surface background, not the old green-tinted one', () => {
-    expect(style).toContain('background: var(--bg-raised);')
+  const bubbleRule = () => {
+    const start = style.indexOf('.tvu-bubble {')
+    return style.slice(start, style.indexOf('}', start))
+  }
+
+  test('no bubble surface at all: the accent rail carries the user side', () => {
+    expect(bubbleRule()).not.toContain('background')
+    expect(bubbleRule()).not.toContain('border: 1px solid')
     expect(style).not.toContain('var(--ok) 12%')
   })
 
@@ -118,8 +124,8 @@ describe('TaskEventUser geometry follows the kit, not a bubble of its own', () =
     expect(style).toContain('border-left: 2px solid var(--accent);')
   })
 
-  test('padding on the kit grid: half a row vertically, whole characters horizontally', () => {
-    expect(style).toContain('padding: calc(var(--row) / 2) 2ch;')
+  test('padding on the kit grid: one character between the rail and the text', () => {
+    expect(style).toContain('padding-left: 1ch;')
   })
 
   test('width capped in characters, fitted to content', () => {
@@ -128,8 +134,7 @@ describe('TaskEventUser geometry follows the kit, not a bubble of its own', () =
   })
 
   test('the bubble pins neither a size nor a line height: both inherit the kit', () => {
-    const start = style.indexOf('.tvu-bubble {')
-    const bubble = style.slice(start, style.indexOf('}', start))
+    const bubble = bubbleRule()
     expect(bubble).not.toContain('font-size')
     expect(bubble).not.toContain('line-height')
     expect(style).not.toMatch(/line-height: \d+px;/)

@@ -359,11 +359,6 @@ function dismissProposal(): void {
   color: var(--fg-dim);
 }
 
-.cv-checks-source {
-  border: 1px solid var(--line);
-  padding: 0 1ch;
-}
-
 .cv-checks-rerun {
   margin-left: auto;
   color: var(--fg-dim);
@@ -582,12 +577,11 @@ function dismissProposal(): void {
   content: '▾ ';
 }
 
-/* The captured stdout+stderr tail: mono, inset, scrolls on its own. */
+/* The captured stdout+stderr tail: mono, inset, scrolls on its own. The kit's
+   `.log` carries the surface and the left hairline. */
 .cv-check-pre {
   margin: calc(var(--row) / 2) 0 0;
   padding: 2px 1ch;
-  background: var(--bg);
-  border: 1px solid var(--line);
   font-size: 12px;
   color: var(--fg-dim);
   white-space: pre-wrap;

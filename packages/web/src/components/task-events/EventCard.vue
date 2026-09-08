@@ -77,9 +77,8 @@ const dataTone = computed(() => EVENT_CARD_DATA_TONE[props.tone ?? 'neutral'])
 
 <style scoped>
 .ec-root {
-  border: 1px solid var(--tone);
-  background: var(--bg-raised);
-  overflow: hidden;
+  border-left: 2px solid var(--tone);
+  padding-left: 1ch;
 }
 
 .ec-root[data-tone='idle'] {
@@ -91,7 +90,7 @@ const dataTone = computed(() => EVENT_CARD_DATA_TONE[props.tone ?? 'neutral'])
   align-items: center;
   gap: 1ch;
   width: 100%;
-  padding: 2px 1ch;
+  padding: 0;
   border: none;
   background: transparent;
   color: inherit;
@@ -147,15 +146,12 @@ const dataTone = computed(() => EVENT_CARD_DATA_TONE[props.tone ?? 'neutral'])
 .ec-token {
   flex: none;
   margin-left: auto;
-  padding: 0 1ch;
-  border: 1px solid var(--line);
   font-size: 12px;
   color: var(--fg-dim);
 }
 
 .ec-body {
-  padding: calc(var(--row) / 2) 1ch;
-  border-top: 1px solid var(--line);
+  padding: calc(var(--row) / 2) 0 0;
   font-size: 12px;
   color: var(--fg-dim);
   white-space: pre-wrap;

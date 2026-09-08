@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Question card, maquette form: mono meta line, then an amber bubble — the
+// Question card, maquette form: mono meta line, then an amber-railed block — the
 // state the semaphore doctrine reserves for "the human is the bottleneck".
 // Opens BY ITSELF when it is the live question of a task in waiting_for_you
 // (ctx.active). The reply field (and the quick-reply buttons) live in the
@@ -57,18 +57,22 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
   color: var(--fg-muted);
 }
 
-/* Amber carries the state: this question blocks the task. */
+/* Amber carries the state: this question blocks the task. The kit's boxed
+   `.question` is flattened here to the left rail the thread reads by. */
 .tvq-bubble {
   margin: 0;
+  border: 0;
+  border-left: 2px solid var(--warn);
+  padding: 0 0 0 1ch;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   min-width: 0;
 }
 
-/* The live question — the one the composer is waiting on — is the only one
-   that gets the soft wash; answered ones keep the plain bordered box. */
+/* The live question — the one the composer is waiting on — thickens its rail;
+   answered ones keep the thin one. */
 .tvq-bubble--active {
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-left-width: 3px;
 }
 
 .tvq-code {

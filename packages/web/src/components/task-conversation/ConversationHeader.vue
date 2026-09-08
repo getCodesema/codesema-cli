@@ -375,9 +375,8 @@ const wait = computed(() =>
   font-size: 12px;
 }
 
+/* Plain text, not a pill: the `.chips` gap already separates them. */
 .cv-chip {
-  padding: 0 1ch;
-  border: 1px solid var(--line);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -386,12 +385,8 @@ const wait = computed(() =>
 
 /* Attaching a repo is an ordinary action, not a state: no colour. */
 .cv-attach-select {
-  font: inherit;
   font-size: 12px;
   color: var(--fg-dim);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  padding: 0 1ch;
   max-width: 24ch;
 }
 
@@ -401,8 +396,12 @@ const wait = computed(() =>
   padding: 0 1ch;
 }
 
+/* The one chip that stays a badge: isolation is a guarantee, and the kit
+   draws it with a hairline in its own tone. */
 .cv-iso {
   cursor: help;
+  padding: 0 1ch;
+  border: 1px solid currentColor;
 }
 
 .cv-iso--container {

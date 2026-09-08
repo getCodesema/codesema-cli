@@ -120,12 +120,9 @@ const composerMode = (): ReplyMode | 'question' => (props.questionActive ? 'ques
   align-items: end;
 }
 
+/* The textarea keeps base.css's own surface: no second box around it. */
 .cv-reply-input {
-  font: inherit;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  padding: 2px 1ch;
+  min-width: 0;
 }
 
 /* A live question turns the composer amber: answering unblocks the agent. */
