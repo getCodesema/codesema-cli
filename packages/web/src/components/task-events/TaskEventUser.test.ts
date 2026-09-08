@@ -145,7 +145,7 @@ describe('TaskEventUser geometry follows the kit, not a bubble of its own', () =
     const template = source.slice(source.indexOf('<template>'), source.indexOf('</template>'))
     expect(template).toContain('class="tvu-root msg user"')
     expect(template).toContain('class="tvu-block body"')
-    expect(template).toContain('class="tvu-bubble tvu-md"')
+    expect(template).toContain('class="tvu-bubble tvu-md md"')
   })
 
   test('the stamp sits at the right of the block, in the kit timestamp class', () => {

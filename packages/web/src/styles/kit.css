@@ -1384,3 +1384,81 @@ button.cell[aria-pressed='true'] {
   border-color: var(--err);
   color: var(--bg);
 }
+
+/* ── Rendered markdown (agent and user messages, live bubbles) ─────────── */
+.md {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.md p,
+.md ul,
+.md ol,
+.md pre,
+.md blockquote,
+.md table {
+  margin: 0 0 calc(var(--row) / 2);
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md h2,
+.md h3 {
+  margin: var(--row) 0 calc(var(--row) / 2);
+  font-size: var(--fs);
+  font-weight: 700;
+  color: var(--fg);
+}
+.md h2:first-child,
+.md h3:first-child {
+  margin-top: 0;
+}
+.md ul,
+.md ol {
+  padding-left: 3ch;
+}
+.md li {
+  margin: 2px 0;
+}
+.md code {
+  white-space: pre-wrap;
+}
+.md pre {
+  padding: calc(var(--row) / 2) 1ch;
+  background: var(--bg-raised);
+  overflow-x: auto;
+}
+.md pre code {
+  color: var(--fg);
+  background: none;
+  padding: 0;
+}
+.md a {
+  color: var(--accent);
+}
+.md blockquote {
+  padding-left: 2ch;
+  border-left: 2px solid var(--line);
+  color: var(--fg-dim);
+}
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: calc(var(--row) / 2) 0;
+}
+.md table {
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.md th,
+.md td {
+  padding: 0 1ch;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.md th {
+  color: var(--fg-dim);
+  font-weight: 700;
+}

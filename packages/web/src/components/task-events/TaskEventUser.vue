@@ -27,7 +27,7 @@ const exact = computed(() => (props.at ? formatExactStamp(props.at) : undefined)
     <span class="tvu-who who you">{{ t('conversation.you') }}</span>
     <div class="tvu-block body">
       <!-- eslint-disable-next-line vue/no-v-html — renderMarkdown escapes everything first -->
-      <div class="tvu-bubble tvu-md" v-html="html" />
+      <div class="tvu-bubble tvu-md md" v-html="html" />
       <span v-if="stamp" class="tvu-time ts">{{ stamp }}</span>
     </div>
   </div>
@@ -64,55 +64,5 @@ const exact = computed(() => (props.at ? formatExactStamp(props.at) : undefined)
   overflow-wrap: anywhere;
   min-width: 0;
   white-space: normal;
-}
-
-/* Rendered markdown: same quiet document rhythm as the assistant's own
-   bubble (TaskEventMessage.vue) — one visual language for both sides of the
-   thread, not a second one invented for the user's side. */
-.tvu-md :deep(p),
-.tvu-md :deep(ul),
-.tvu-md :deep(ol),
-.tvu-md :deep(pre) {
-  margin: 0 0 calc(var(--row) / 2);
-}
-
-.tvu-md :deep(:last-child) {
-  margin-bottom: 0;
-}
-
-.tvu-md :deep(h2),
-.tvu-md :deep(h3) {
-  margin: var(--row) 0 calc(var(--row) / 2);
-  font-size: var(--fs);
-  font-weight: 700;
-  color: var(--fg);
-}
-
-.tvu-md :deep(h2:first-child),
-.tvu-md :deep(h3:first-child) {
-  margin-top: 0;
-}
-
-.tvu-md :deep(ul),
-.tvu-md :deep(ol) {
-  padding-left: 3ch;
-}
-
-.tvu-md :deep(li) {
-  margin: 2px 0;
-}
-
-.tvu-md :deep(code) {
-  white-space: pre-wrap;
-}
-
-.tvu-md :deep(pre) {
-  padding: calc(var(--row) / 2) 1ch;
-  background: var(--bg-raised);
-  overflow-x: auto;
-}
-
-.tvu-md :deep(a) {
-  color: var(--accent);
 }
 </style>

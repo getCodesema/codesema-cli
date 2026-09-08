@@ -32,7 +32,7 @@ const exact = computed(() => formatExactStamp(props.event.at))
       {{ t('workspace.agentLabel') }}<template v-if="ago"> · {{ ago }}</template>
     </p>
     <!-- eslint-disable-next-line vue/no-v-html — renderMarkdown escapes everything first -->
-    <div class="tvm-bubble tvm-md" v-html="html" />
+    <div class="tvm-bubble tvm-md md" v-html="html" />
   </div>
 </template>
 
@@ -56,57 +56,5 @@ const exact = computed(() => formatExactStamp(props.event.at))
   color: var(--fg);
   overflow-wrap: anywhere;
   min-width: 0;
-}
-
-/* Rendered markdown: quiet document rhythm, no bubble around it. */
-.tvm-md :deep(p),
-.tvm-md :deep(ul),
-.tvm-md :deep(ol),
-.tvm-md :deep(pre) {
-  margin: 0 0 calc(var(--row) / 2);
-}
-
-.tvm-md :deep(:last-child) {
-  margin-bottom: 0;
-}
-
-.tvm-md :deep(h2),
-.tvm-md :deep(h3) {
-  margin: var(--row) 0 calc(var(--row) / 2);
-  font-size: var(--fs);
-  font-weight: 700;
-  color: var(--fg);
-}
-
-.tvm-md :deep(h2:first-child),
-.tvm-md :deep(h3:first-child) {
-  margin-top: 0;
-}
-
-.tvm-md :deep(ul),
-.tvm-md :deep(ol) {
-  padding-left: 3ch;
-}
-
-.tvm-md :deep(li) {
-  margin: 2px 0;
-}
-
-.tvm-md :deep(code) {
-  white-space: pre-wrap;
-}
-
-.tvm-md :deep(pre) {
-  padding: calc(var(--row) / 2) 1ch;
-  background: var(--bg-raised);
-  overflow-x: auto;
-}
-
-.tvm-md :deep(pre code) {
-  color: var(--fg);
-}
-
-.tvm-md :deep(a) {
-  color: var(--accent);
 }
 </style>

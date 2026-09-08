@@ -29,6 +29,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **The rail is icons-only when collapsed and 30ch wide when open**; the three rail lists (conversations, repositories, code review) share the same borderless search line under the same header band.
 - **Turns and reviews in flight are blue** (the machine works); amber is reserved for a human being waited on.
 - **The conversation is near-monochrome**: the user's prompt is the only filled block, events separate by whitespace instead of hairlines and left rails, identity chips (project, branch, isolation, durations) are one muted meta line with the asked sentence folded behind it, badges keep a box only on a real state (open MR, non-ok verdict), and the composer is a plain frame with a prompt glyph whose send button appears once there is text.
+- **Markdown renders everywhere a message shows**: the agent's streaming bubbles are rendered like settled messages, and the renderer now handles blockquotes, pipe tables and horizontal rules, with one shared `.md` style in the kit.
 - **`TaskConversation.vue` and `DiffView.vue` are split** into `task-conversation/*` and `diff/*` components with a thin orchestrator each.
 - **Emojis and glyphs missing from the shipped font are replaced** by the `G` glyph set (`packages/web/src/glyphs.ts`), so no line ever falls back to a second font.
 - **A task card stacks its four blocks in one column** (evidence, recap, checks, criteria) instead of a two-by-two grid.

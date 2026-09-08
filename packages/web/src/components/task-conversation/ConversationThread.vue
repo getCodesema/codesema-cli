@@ -9,6 +9,7 @@ import type { ApiResult, TaskState } from '../../composables/useTasks'
 import { cleanupOffer, type ThreadItem } from '../../conversation-thread'
 import { G } from '../../glyphs'
 import { t } from '../../i18n'
+import { renderMarkdown } from '../../markdown'
 import { TASK_EVENT_COMPONENTS } from '../../task-event-registry'
 import QuickReplies from '../composer/QuickReplies.vue'
 import TaskEventUser from '../task-events/TaskEventUser.vue'
@@ -187,7 +188,8 @@ watch(
       class="cv-live msg"
       :class="{ live: index === liveBubbles.length - 1 }"
     >
-      <p class="cv-live-text body">{{ bubble.text }}</p>
+      <!-- eslint-disable-next-line vue/no-v-html — renderMarkdown escapes everything first -->
+      <div class="cv-live-text body md" v-html="renderMarkdown(bubble.text)" />
       <p v-if="index === liveBubbles.length - 1" class="cv-live-hint">
         {{ t('workspace.agentWriting') }}
       </p>
