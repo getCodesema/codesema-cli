@@ -39,7 +39,7 @@ const props = defineProps<{
 /** Null when the forge answers, and null when nothing is known about it. */
 const forgeReasonKey = computed(() => forgeUnavailableKey(props.workspace ?? null))
 
-const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shell': [] }>()
+const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
 </script>
 
 <template>
@@ -66,9 +66,6 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: []; 'switch-shel
         <span aria-hidden="true">{{ G.attention }}</span>
         {{ t('workspace.forgeUnavailable') }} — {{ t(forgeReasonKey) }}
       </span>
-      <button class="wh-pilot-toggle cell" type="button" @click="emit('switch-shell')">
-        {{ t('pilot.toggle.grid') }}
-      </button>
       <button
         class="wh-settings cell"
         type="button"

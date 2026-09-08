@@ -365,15 +365,10 @@ describe('a scratch draft shows no branch/base chrome', () => {
   })
 })
 
-// App owns the pilot/classic aiguillage; this view only relays the header's
-// gesture up to it, one event, nothing decided here.
-describe('the shell toggle is relayed, not decided, here', () => {
-  test('the header emit reaches an emit of this view, unchanged', () => {
-    expect(SOURCE).toContain("defineEmits<{ 'switch-shell': [] }>()")
-    const tag = SOURCE.slice(
-      SOURCE.indexOf('<WorkspaceHeader'),
-      SOURCE.indexOf('/>', SOURCE.indexOf('<WorkspaceHeader')),
-    )
-    expect(tag).toContain('@switch-shell="emit(\'switch-shell\')"')
+// The classic shell is the product: there is no second shell to switch to,
+// so this view emits nothing about one.
+describe('no shell switch survives in the view', () => {
+  test('neither the emit nor the header wiring is left behind', () => {
+    expect(SOURCE).not.toContain('switch-shell')
   })
 })

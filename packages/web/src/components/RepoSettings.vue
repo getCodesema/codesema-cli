@@ -9,7 +9,6 @@ import {
 } from '../composables/useSettings'
 import { G } from '../glyphs'
 import type { AgentOption } from '../types'
-import ThemePicker from './ThemePicker.vue'
 
 type RepoConfigSnapshot = {
   rulesContent: string
@@ -329,8 +328,6 @@ onMounted(load)
 <template>
   <div class="cfg-root">
     <h1 class="cfg-title">{{ $t('settings.title') }}</h1>
-
-    <ThemePicker />
 
     <div v-if="loading" class="cfg-state">
       <p class="cfg-state-line status" data-s="running">{{ $t('settings.loading') }}</p>

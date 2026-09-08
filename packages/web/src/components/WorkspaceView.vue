@@ -95,7 +95,6 @@ import TaskConversation from './TaskConversation.vue'
 import WorkspaceHeader from './WorkspaceHeader.vue'
 
 const props = defineProps<{ token: string }>()
-const emit = defineEmits<{ 'switch-shell': [] }>()
 
 const {
   store,
@@ -975,7 +974,6 @@ watch(
       :workspace="headerWorkspace"
       @open-oldest-waiting="openOldestWaiting"
       @settings="toggleSettings"
-      @switch-shell="emit('switch-shell')"
     />
 
     <p v-if="!connected" class="ws-offline live" role="status">

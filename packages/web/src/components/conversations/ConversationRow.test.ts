@@ -139,6 +139,7 @@ describe('nothing else is drawn: no card, no pill, no meta line', () => {
   test('the age is muted, on its own tabular column', () => {
     const rule = SOURCE.slice(SOURCE.indexOf('.cvr-age {'), SOURCE.length)
     expect(rule).toContain('color: var(--fg-muted);')
+    expect(rule).toContain('font-size: 12px;')
     expect(rule).toContain('font-variant-numeric: tabular-nums;')
   })
 

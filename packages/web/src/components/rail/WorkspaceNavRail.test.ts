@@ -80,13 +80,37 @@ describe('categories: all three render, the active one carries the tinted accent
     expect(buttons[0]?.[1]).toContain('aria-current="false"')
   })
 
-  test('the active row accents its own icon on top of the tinted fill', () => {
+  test('the active row lifts its own icon out of the dim, on top of the tinted fill', () => {
     expect(SOURCE).toContain('.wnr-cat--active .wnr-row-icon {')
     const block = SOURCE.slice(
       SOURCE.indexOf('.wnr-cat--active .wnr-row-icon {'),
       SOURCE.indexOf('.wnr-icon-slot {'),
     )
-    expect(block).toContain('color: var(--ok);')
+    expect(block).toContain('color: var(--fg);')
+  })
+
+  test('the current row carries an accent edge, drawn transparent otherwise', () => {
+    const rows = SOURCE.slice(
+      SOURCE.indexOf('.wnr-cat,'),
+      SOURCE.indexOf('.wnr-cat--active .wnr-row-icon'),
+    )
+    expect(rows).toContain('border-left: 2px solid transparent;')
+    expect(rows).toContain('border-left-color: var(--accent);')
+  })
+
+  test('rows follow the kit .proj grammar: a 2ch glyph column, then the label', () => {
+    const rows = SOURCE.slice(
+      SOURCE.indexOf('.wnr-cat,'),
+      SOURCE.indexOf('.wnr-cat--active .wnr-row-icon'),
+    )
+    expect(rows).toContain('grid-template-columns: 2ch 1fr auto;')
+  })
+
+  test('row icons size on the text, in the dim colour', () => {
+    const icon = SOURCE.slice(SOURCE.indexOf('.wnr-row-icon {'), SOURCE.indexOf('.wnr-cat-label,'))
+    expect(icon).toContain('width: 1em;')
+    expect(icon).toContain('height: 1em;')
+    expect(icon).toContain('color: var(--fg-dim);')
   })
 })
 
@@ -201,11 +225,46 @@ describe('rows carry no border: explicit, never a bare omission', () => {
 })
 
 describe('structure: brand header renders ahead of the categories', () => {
-  test('the brand name and both categories are present, in that order', async () => {
+  test('the brand renders in the kit two-tone form, ahead of the categories', async () => {
     const html = await render()
-    const brandAt = html.indexOf('codesema')
+    const brandAt = html.indexOf('code<i>sema</i>')
     const conversationsAt = html.indexOf(t('rail.conversations'))
     expect(brandAt).toBeGreaterThan(-1)
     expect(conversationsAt).toBeGreaterThan(brandAt)
+  })
+
+  test('the brand accent is the ok token, on the italic half only', () => {
+    const brand = SOURCE.slice(SOURCE.indexOf('.wnr-brand i {'), SOURCE.indexOf('.wnr-toggle {'))
+    expect(brand).toContain('color: var(--ok);')
+  })
+
+  test('collapsed: the brand steps aside, the band keeps its height', async () => {
+    const html = await render({ collapsed: true })
+    expect(html).not.toContain('code<i>sema</i>')
+    expect(html).toContain('wnr-header rail-h wnr-header--collapsed')
+  })
+})
+
+describe('the theme picker sits in the bottom zone, above settings', () => {
+  test('a compact picker renders between the hairline and the settings row', async () => {
+    const html = await render()
+    const themeAt = html.indexOf('tp-compact')
+    const settingsAt = html.indexOf('wnr-settings')
+    expect(themeAt).toBeGreaterThan(-1)
+    expect(settingsAt).toBeGreaterThan(themeAt)
+  })
+
+  test('collapsed: only the swap button is offered, expanding the rail', async () => {
+    const html = await render({ collapsed: true })
+    expect(html).toContain('tp-swap')
+    expect(html).not.toContain('tp-compact')
+  })
+
+  test('the settings row is set off from the picker by its own hairline', () => {
+    const block = SOURCE.slice(
+      SOURCE.indexOf('.wnr-footer .wnr-settings {'),
+      SOURCE.indexOf('.wnr-footer .wnr-settings {') + 120,
+    )
+    expect(block).toContain('border-top: 1px solid var(--line);')
   })
 })

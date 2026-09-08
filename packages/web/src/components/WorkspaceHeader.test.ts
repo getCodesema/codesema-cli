@@ -140,12 +140,10 @@ describe('and stays silent when there is nothing to state', () => {
   })
 })
 
-describe('the pilot shell toggle sits with the other header actions', () => {
-  test('a discreet button offers the grid shell, always visible', async () => {
+describe('the header offers no shell switch: the classic shell is the only one', () => {
+  test('no grid-shell toggle is rendered', async () => {
     const html = await renderHeader(info({}))
-    const match = html.match(/<button[^>]*class="wh-pilot-toggle cell"[^>]*>/)
-    expect(match).not.toBeNull()
-    expect(html).toContain(t('pilot.toggle.grid'))
+    expect(html).not.toContain('wh-pilot-toggle')
   })
 })
 

@@ -49,6 +49,7 @@ const age = computed(() => formatConversationTimestamp(props.state.record.update
 
 .cvr-age {
   color: var(--fg-muted);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }

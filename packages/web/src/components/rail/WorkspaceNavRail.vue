@@ -1,12 +1,14 @@
 <script setup lang="ts">
 // The category rail (zone 1 of the 3-zone workspace layout): a switch
-// between conversations/repositories, a collapse toggle, and a settings
-// entry. All state (category, collapsed, needsYou) is owned by the parent
-// (WorkspaceView.vue persists it) — this component is purely presentational.
-// Rows are kit `.proj` rows: the current one is named by `aria-current` and
-// reads as a filled row, never as a border. `border: none` stays explicit on
-// every native <button>, since this project imports no Tailwind preflight to
-// reset the browser's own default (see styles/base.css).
+// between conversations/repositories, a collapse toggle, the theme picker
+// and a settings entry. All state (category, collapsed, needsYou) is owned
+// by the parent (WorkspaceView.vue persists it) — this component is purely
+// presentational. Its header is one band of the same height as the list and
+// stage headers, so the three columns share a single hairline. Rows are kit
+// `.proj` rows: the current one is named by `aria-current` and reads as a
+// filled row with an accent edge, never as a box. `border: none` stays
+// explicit on every native <button>, since this project imports no Tailwind
+// preflight to reset the browser's own default (see styles/base.css).
 import {
   FolderGit2,
   MessageSquare,
@@ -17,6 +19,7 @@ import {
 } from '@lucide/vue'
 import type { NavCategory } from '../../composables/useWorkspaceNav'
 import { t } from '../../i18n'
+import ThemePicker from '../ThemePicker.vue'
 
 defineProps<{
   category: NavCategory
@@ -36,10 +39,7 @@ const emit = defineEmits<{
 <template>
   <nav class="wnr-root rail" :class="{ 'wnr-root--collapsed': collapsed }">
     <div class="wnr-header rail-h" :class="{ 'wnr-header--collapsed': collapsed }">
-      <div class="wnr-brand">
-        <span class="wnr-brand-mark" aria-hidden="true">C</span>
-        <span v-if="!collapsed" class="wnr-brand-name">codesema</span>
-      </div>
+      <span v-if="!collapsed" class="wnr-brand">code<i>sema</i></span>
       <button
         type="button"
         class="wnr-toggle"
@@ -103,9 +103,10 @@ const emit = defineEmits<{
       </button>
     </div>
 
-    <div class="wnr-spacer" />
-
     <div class="wnr-footer">
+      <div class="wnr-theme">
+        <ThemePicker compact :collapsed="collapsed" @expand="emit('update:collapsed', false)" />
+      </div>
       <button
         type="button"
         class="wnr-settings proj"
@@ -127,48 +128,36 @@ const emit = defineEmits<{
   width: 215px;
   flex: none;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .wnr-root--collapsed {
   width: 56px;
 }
 
+/* One band with the list and stage headers: same height, one hairline. */
 .wnr-header {
+  flex: none;
   gap: 1ch;
 }
 
 .wnr-header--collapsed {
-  flex-direction: column;
-  height: auto;
-  padding: calc(var(--row) / 2) 1ch;
+  justify-content: center;
+  padding: 0 1ch;
 }
 
 .wnr-brand {
-  display: flex;
-  align-items: center;
-  gap: 1ch;
   min-width: 0;
-}
-
-.wnr-brand-mark {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 3ch;
-  border: 1px solid var(--ok);
-  color: var(--ok);
-  font-weight: 700;
-}
-
-.wnr-brand-name {
-  color: var(--fg);
-  font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.wnr-brand i {
+  font-style: normal;
+  color: var(--ok);
 }
 
 .wnr-toggle {
@@ -176,21 +165,35 @@ const emit = defineEmits<{
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  font: inherit;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
   padding: 0 1ch;
+}
+
+.wnr-toggle:hover {
+  color: var(--fg);
 }
 
 .wnr-toggle-icon {
   flex: none;
-  width: 14px;
-  height: 14px;
+  width: 1em;
+  height: 1em;
 }
 
 .wnr-categories {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
 
-/* Rows follow the kit `.proj` anatomy; only the icon slot is local. */
+/* Rows follow the kit `.proj` anatomy: a 2ch glyph column, then the label.
+   The accent edge is always drawn, transparent until the row is current, so
+   the label never shifts by two pixels when the category changes. */
 .wnr-cat,
 .wnr-settings {
   grid-template-columns: 2ch 1fr auto;
@@ -200,13 +203,18 @@ const emit = defineEmits<{
   font: inherit;
   color: var(--fg-dim);
   border: none;
+  border-left: 2px solid transparent;
   background: transparent;
 }
 
+.wnr-cat[aria-current='true'] {
+  border-left-color: var(--accent);
+}
+
 /* The current row is named by `aria-current` and styled by the kit; the icon
-   accents with it. */
+   follows the label out of the dim. */
 .wnr-cat--active .wnr-row-icon {
-  color: var(--ok);
+  color: var(--fg);
 }
 
 .wnr-icon-slot {
@@ -218,8 +226,9 @@ const emit = defineEmits<{
 
 .wnr-row-icon {
   flex: none;
-  width: 14px;
-  height: 14px;
+  width: 1em;
+  height: 1em;
+  color: var(--fg-dim);
 }
 
 .wnr-cat-label,
@@ -239,11 +248,20 @@ const emit = defineEmits<{
   font-variant-numeric: tabular-nums;
 }
 
-.wnr-spacer {
-  flex: 1;
+.wnr-footer {
+  flex: none;
+  border-top: 1px solid var(--line);
 }
 
-.wnr-footer {
+.wnr-theme {
+  padding: calc(var(--row) / 2) 1ch calc(var(--row) / 2) 2ch;
+}
+
+.wnr-root--collapsed .wnr-theme {
+  padding: calc(var(--row) / 2) 1ch;
+}
+
+.wnr-footer .wnr-settings {
   border-top: 1px solid var(--line);
 }
 

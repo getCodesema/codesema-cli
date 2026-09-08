@@ -30,8 +30,7 @@ const emit = defineEmits<{ pick: [option: string]; other: [] }>()
 
 <style scoped>
 /* Amber: answering IS the pending human action. The kit's own `.qr .btn`
-   look, kept scoped because the option buttons carry their BEM class alone
-   (pilot/QuestionBlock.test.ts matches the exact class attribute). */
+   look, kept scoped because the option buttons carry their BEM class alone. */
 .qr-opt,
 .qr-other {
   font: inherit;

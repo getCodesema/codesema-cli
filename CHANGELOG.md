@@ -9,16 +9,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 - **One visual system for the whole web UI, ported from the Codesema UI Kit** (`packages/web/design/ui-kit.html`): 13 colour tokens, a single self-hosted monospace font (Cascadia Mono, 42 KB subset), 14px/1.6 text on a `1ch` × line grid, 1px borders with no radius and no shadow, and shared component classes (`packages/web/src/styles/{tokens,base,kit}.css`).
 - **Nine switchable palettes and an AAA contrast variant** (Tokyo Night by default, plus Nord, Gruvbox Dark, Catppuccin Mocha, Bauhaus, Aamis, Aetheria, Arc Blueberry, Artzen), chosen from the repo settings page and remembered per browser, applied before the first paint.
-- **The pilot shell is now the default workspace**: the conversations list on the left, one conversation centred (chat-ops thread and composer), the previous interface reachable behind a toggle; below 760px the list and the open conversation take turns. Tiling and multi-column layouts are deferred.
+- **The theme picker lives at the bottom of the navigation rail**, above the repo settings entry.
 - **Decision D17: a turn's visual proof of its own effect is now part of the review.** A `microvm` task can declare and capture a screenshot or a Playwright journey each turn (`proof` in `.codesema/config.json`, a `PROOF: <none|screenshot|journey>` line in the agent's reply); the reviewer checks the declaration against the diff and raises a finding only on an unproven visible change or an unexplained failed proof.
 - **`codesema runbook validate`** validates a hand-edited `.codesema/runbook.json` as-is, without asking an agent for a new proposal.
 - **The runbook can declare background services**, started in the verification VM ahead of its healthchecks and tests.
 - **A task now carries its own activity**: the phase a turn is currently in is broadcast live and shown on its card and in the evidence block.
 - **A turn now emits its recap the moment it ends, and a finished task without one gets it computed on read**, with the microvm verification surfaced alongside it.
 
+### Removed
+
+- **The pilot grid shell** (tiled agent cards, lanes, lens overlays, mobile list): the workspace is the navigation rail, one flat list of conversations, and one conversation. Tiling and multi-column layouts are deferred.
+
 ### Changed
 
 - **The standalone review mode now shares the dark workspace theme**: the light "Semaphore" palette, the `--codesema-*`/`--cs-*` token families, Instrument Sans and JetBrains Mono are gone, along with the Tailwind token bridge.
+- **The conversations rail is one flat list**: a conversation is its title and time between two hairlines, ordered attention first, no grouping by project; a conversation may carry no project.
 - **Task, event and finding states are rendered through semantic tones** (`data-tone`, `data-s`, `data-v`, `data-r`) read by CSS, instead of colour tables in TypeScript.
 - **`TaskConversation.vue` and `DiffView.vue` are split** into `task-conversation/*` and `diff/*` components with a thin orchestrator each.
 - **Emojis and glyphs missing from the shipped font are replaced** by the `G` glyph set (`packages/web/src/glyphs.ts`), so no line ever falls back to a second font.

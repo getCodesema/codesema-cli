@@ -161,11 +161,14 @@ function isSelected(state: TaskState): boolean {
   color: var(--fg);
 }
 
-/* The kit's borderless appbar search, on its own line under the header. */
+/* The kit's borderless appbar search, on its own line under the header and
+   on the same band height, so the list keeps one rhythm from top to bottom. */
 .cvl-search {
   flex: none;
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  box-sizing: border-box;
+  height: calc(var(--row) + 4px);
   gap: 1ch;
   padding: 2px 1ch 2px 2ch;
   border-bottom: 1px solid var(--line);
