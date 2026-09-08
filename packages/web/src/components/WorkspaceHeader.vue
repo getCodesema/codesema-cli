@@ -1,13 +1,16 @@
 <script setup lang="ts">
-// Global workspace app bar: brand + WORKSPACE label, and the live signals on
-// the right — the amber "N agents need you" cell (visible only when N > 0,
-// clicking it opens the conversation that has waited the longest) and the
-// "N agents" counter (running + reviewing, blinking dot while at least one
-// run is live). No avatar, per the maquette.
+// The stage's segment of the workspace header band: the same height and the
+// same hairline as the rail and list headers next to it, so the three
+// columns read as ONE line across the desk. It carries only what is about
+// the workspace as a whole and about nothing on screen in particular — the
+// live signals, right-aligned.
 //
-// The search lives in the list column, not here: each list searches its own
-// corpus (conversations, repositories), and a header field on top of them
-// would be a second box searching an overlapping third thing. Cmd/Ctrl+K is owned by
+// The brand lives in the rail header and the settings entry in the rail
+// footer: neither is repeated here.
+//
+// The search lives in the list column too: each list searches its own corpus
+// (conversations, repositories), and a header field on top of them would be
+// a second box searching an overlapping third thing. Cmd/Ctrl+K is owned by
 // the shell, which focuses whichever list is up.
 //
 // Plus, since T2.7/D9, the one place the workspace says it cannot reach a
@@ -25,8 +28,6 @@ const props = defineProps<{
   needsYou: number
   /** Agents currently working: running + reviewing. */
   agents: number
-  /** Settings overlay is open: the button reads as back. */
-  settingsOpen?: boolean
   /**
    * Workspace facts of the card being looked at (GET /api/projects). Null
    * while they have not been fetched — which is UNKNOWN, not "the forge is
@@ -39,16 +40,11 @@ const props = defineProps<{
 /** Null when the forge answers, and null when nothing is known about it. */
 const forgeReasonKey = computed(() => forgeUnavailableKey(props.workspace ?? null))
 
-const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
+const emit = defineEmits<{ 'open-oldest-waiting': [] }>()
 </script>
 
 <template>
   <header class="wh-root appbar">
-    <div class="wh-brand brand">
-      <span class="wh-brand-name">codesema</span>
-      <span class="wh-brand-sub">{{ t('workspace.title') }}</span>
-    </div>
-
     <div class="wh-gap" />
 
     <div class="wh-right cells">
@@ -66,14 +62,6 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
         <span aria-hidden="true">{{ G.attention }}</span>
         {{ t('workspace.forgeUnavailable') }} — {{ t(forgeReasonKey) }}
       </span>
-      <button
-        class="wh-settings cell"
-        type="button"
-        :aria-pressed="settingsOpen === true"
-        @click="emit('settings')"
-      >
-        {{ settingsOpen ? t('workspace.back') : t('nav.settings') }}
-      </button>
       <!-- Amber attention: at least one agent is blocked on the human. -->
       <button
         v-if="needsYou > 0"
@@ -94,25 +82,14 @@ const emit = defineEmits<{ 'open-oldest-waiting': []; settings: [] }>()
 </template>
 
 <style scoped>
+/* One band with the rail and list headers: the same height, and the same
+   single hairline under it — never a frame of its own. */
 .wh-root {
   flex: none;
-}
-
-.wh-brand {
-  gap: 1ch;
-  align-items: baseline;
-}
-
-.wh-brand-name {
-  font-weight: 700;
-  color: var(--fg);
-}
-
-.wh-brand-sub {
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
+  grid-template-columns: 1fr auto;
+  height: calc(var(--row) + 4px);
+  border: 0;
+  border-bottom: 1px solid var(--line);
 }
 
 .wh-gap {

@@ -140,6 +140,47 @@ describe('and stays silent when there is nothing to state', () => {
   })
 })
 
+describe('the band segment says nothing the rail already says', () => {
+  test('no brand: it is printed once, in the rail header', async () => {
+    const html = await renderHeader(info({}))
+    expect(html).not.toContain('codesema')
+    expect(html).not.toContain('wh-brand')
+    expect(html).not.toContain(t('workspace.title'))
+  })
+
+  test('no settings cell: the one entry is the rail footer row', async () => {
+    const html = await renderHeader(info({}))
+    expect(html).not.toContain('wh-settings')
+    expect(html).not.toContain(t('nav.settings'))
+  })
+
+  test('the agents counter is what remains, with its status dot', async () => {
+    const html = await renderHeader(info({}))
+    expect(html).toContain('wh-agents')
+    expect(html).toContain('class="wh-agents-dot status"')
+    expect(html).toContain(t('workspace.agentsCount', { n: 0 }))
+  })
+
+  test('a live run turns the dot on, an idle desk leaves it off', async () => {
+    const WorkspaceHeader = (await import('./WorkspaceHeader.vue')).default
+    const busy = await renderToString(createSSRApp(WorkspaceHeader, { needsYou: 0, agents: 2 }))
+    expect(busy).toContain('data-s="running"')
+    const idle = await renderHeader(info({}))
+    expect(idle).toContain('data-s="idle"')
+  })
+
+  test('the segment is one band line under one hairline, never a frame', () => {
+    const SOURCE = readFileSync(join(import.meta.dir, 'WorkspaceHeader.vue'), 'utf8')
+    const rule = SOURCE.slice(SOURCE.indexOf('.wh-root {'), SOURCE.indexOf('.wh-gap {'))
+    expect(rule).toContain('height: calc(var(--row) + 4px);')
+    expect(rule).toContain('border: 0;')
+    expect(rule).toContain('border-bottom: 1px solid var(--line);')
+    expect(SOURCE).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+    expect(SOURCE).not.toContain('border-radius')
+    expect(SOURCE).not.toContain('box-shadow')
+  })
+})
+
 describe('the header offers no shell switch: the classic shell is the only one', () => {
   test('no grid-shell toggle is rendered', async () => {
     const html = await renderHeader(info({}))

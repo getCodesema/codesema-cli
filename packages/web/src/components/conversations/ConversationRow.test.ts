@@ -67,12 +67,34 @@ async function render(state: TaskState): Promise<string> {
   return renderToString(app)
 }
 
-describe('one conversation is one line: title, age', () => {
-  test('the line is the title, the age, and nothing else from the record', async () => {
-    const html = await render(taskState({ title: 'fix the retry loop' }))
+describe('one conversation is one line: label, timestamp', () => {
+  test('the line is the conversation label, the timestamp, and nothing else', async () => {
+    const html = await render(
+      taskState({ title: 'fix the retry loop', branch: 'codesema/task-fix-the-retry-loop' }),
+    )
     expect(html).toContain('fix the retry loop')
     expect(html).toContain('class="cvr-title"')
     expect(html).toContain('class="cvr-age"')
+  })
+
+  test('the label is the shared resolver: an agent-named branch, read as words', async () => {
+    const html = await render(
+      taskState({ title: 'a very long free-form title', branch: 'codesema/task-retry-the-push-2' }),
+    )
+    expect(html).toContain('retry the push')
+    expect(html).not.toContain('>a very long free-form title<')
+  })
+
+  test('a branch the agent never named falls back to the title', async () => {
+    const html = await render(taskState({ title: 'manual work', branch: 'develop' }))
+    expect(html).toContain('manual work')
+  })
+
+  test('the full title stays reachable on hover, whatever the label shows', async () => {
+    const html = await render(
+      taskState({ title: 'the whole untruncated title', branch: 'codesema/task-short-one' }),
+    )
+    expect(html).toContain('title="the whole untruncated title"')
   })
 
   test('the tone comes from the one status table, never from an inline style', async () => {
@@ -116,14 +138,15 @@ describe('nothing else is drawn: no card, no pill, no meta line', () => {
     expect(rule).toContain('align-items: baseline;')
   })
 
-  test('the title truncates, never wraps', () => {
+  test('the label runs over two lines at most, then cuts', () => {
     const rule = SOURCE.slice(
       SOURCE.indexOf('.cvr-title {'),
       SOURCE.indexOf(".cvr-root[data-finished='true']"),
     )
+    expect(rule).toContain('-webkit-line-clamp: 2;')
+    expect(rule).toContain('-webkit-box-orient: vertical;')
     expect(rule).toContain('overflow: hidden;')
-    expect(rule).toContain('text-overflow: ellipsis;')
-    expect(rule).toContain('white-space: nowrap;')
+    expect(rule).not.toContain('white-space: nowrap;')
     expect(rule).toContain('color: var(--fg);')
   })
 
@@ -136,11 +159,16 @@ describe('nothing else is drawn: no card, no pill, no meta line', () => {
     expect(SOURCE).not.toContain('opacity')
   })
 
-  test('the age is muted, on its own tabular column', () => {
+  test('the timestamp is muted, on its own tabular column, on the first line', () => {
     const rule = SOURCE.slice(SOURCE.indexOf('.cvr-age {'), SOURCE.length)
     expect(rule).toContain('color: var(--fg-muted);')
     expect(rule).toContain('font-size: 12px;')
     expect(rule).toContain('font-variant-numeric: tabular-nums;')
+    expect(rule).toContain('white-space: nowrap;')
+    // The first line is where it sits: the grid aligns both cells on the
+    // baseline, which is the FIRST line box of a clamped label.
+    const root = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-title {'))
+    expect(root).toContain('align-items: baseline;')
   })
 
   test('no colour is spelled out: only theme tokens, never a plain hex', () => {

@@ -1,9 +1,11 @@
 <script setup lang="ts">
-// Workspace shell: a global app bar (attention cell, agents
-// counter), the projects column on the left, the conversations column in the
-// center-left, and the focus zone on the right. The focus zone shows ONE
-// thing at a time, named by a single FocusView value (useWorkspaceNav, pure)
-// rather than deduced from several independent refs. Owns the single
+// Workspace shell: the category rail on the left, the list column next to
+// it, and the stage on the right. The three columns open on ONE header band
+// — the rail header, the list header and the stage's app bar segment share a
+// height and a single hairline — because each column owns its own header;
+// the band is an alignment, not a fourth element above them. The stage shows
+// ONE thing at a time, named by a single FocusView value (useWorkspaceNav,
+// pure) rather than deduced from several independent refs. Owns the single
 // useTasks stream; every child stays presentational and derives from pure
 // functions.
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
@@ -967,24 +969,7 @@ watch(
 
 <template>
   <div class="ws-root">
-    <WorkspaceHeader
-      :needs-you="counters.needsYou"
-      :agents="counters.agents"
-      :settings-open="showSettings"
-      :workspace="headerWorkspace"
-      @open-oldest-waiting="openOldestWaiting"
-      @settings="toggleSettings"
-    />
-
-    <p v-if="!connected" class="ws-offline live" role="status">
-      <span aria-hidden="true">{{ G.attention }}</span>
-      <span>{{ t('workspace.connectionLost') }}</span>
-    </p>
-
-    <div v-if="showSettings" class="ws-settings">
-      <RepoSettings />
-    </div>
-    <div v-else class="ws-body shell" :style="{ '--ws-list-w': `${railPrefs.listWidth}px` }">
+    <div class="ws-body shell" :style="{ '--ws-list-w': `${railPrefs.listWidth}px` }">
       <WorkspaceNavRail
         :category="railPrefs.category"
         :collapsed="railPrefs.navCollapsed"
@@ -1046,8 +1031,28 @@ watch(
       />
 
       <main class="ws-focus">
+        <!-- The stage's segment of the header band: one line, one hairline,
+             shared with the rail and list headers on its left. -->
+        <WorkspaceHeader
+          :needs-you="counters.needsYou"
+          :agents="counters.agents"
+          :workspace="headerWorkspace"
+          @open-oldest-waiting="openOldestWaiting"
+        />
+
+        <p v-if="!connected" class="ws-offline live" role="status">
+          <span aria-hidden="true">{{ G.attention }}</span>
+          <span>{{ t('workspace.connectionLost') }}</span>
+        </p>
+
+        <!-- Settings stay INSIDE the stage: the rail entry that opened them
+             is still on screen, and is what closes them again. -->
+        <div v-if="showSettings" class="ws-settings">
+          <RepoSettings />
+        </div>
+
         <!-- Review view: the existing guided review, over the focus zone. -->
-        <div v-if="reviewRecord" class="ws-review">
+        <div v-else-if="reviewRecord" class="ws-review">
           <button class="ws-review-back btn ghost" type="button" @click="backFromReview">
             {{ t('workspace.back') }} <kbd>Esc</kbd>
           </button>
@@ -1288,8 +1293,10 @@ watch(
 }
 
 /* Four sibling zones on one grid: the category rail, the list column, its
-   drag handle, the stage. The list width is the one layout value the desk
-   owns, so it rides on the grid track itself. */
+   drag handle, the stage. Each carries its own header at the same band
+   height, which is what makes the three headers read as one line. The list
+   width is the one layout value the desk owns, so it rides on the grid track
+   itself. */
 .ws-body {
   flex: 1;
   min-height: 0;

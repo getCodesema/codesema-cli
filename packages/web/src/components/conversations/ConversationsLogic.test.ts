@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
 import type { TaskState } from '../../composables/useTasks'
-import { t } from '../../i18n'
 import type { TaskRecord } from '../../types'
 import {
   formatConversationTimestamp,
@@ -61,86 +60,39 @@ function localEpoch(year: number, month: number, day: number, at: LocalTime = NO
   return new Date(year, month - 1, day, at.hour, at.minute).getTime()
 }
 
-const WEEKDAY = [
-  t('time.weekdaySun'),
-  t('time.weekdayMon'),
-  t('time.weekdayTue'),
-  t('time.weekdayWed'),
-  t('time.weekdayThu'),
-  t('time.weekdayFri'),
-  t('time.weekdaySat'),
-]
-const MONTH = [
-  t('time.monthJan'),
-  t('time.monthFeb'),
-  t('time.monthMar'),
-  t('time.monthApr'),
-  t('time.monthMay'),
-  t('time.monthJun'),
-  t('time.monthJul'),
-  t('time.monthAug'),
-  t('time.monthSep'),
-  t('time.monthOct'),
-  t('time.monthNov'),
-  t('time.monthDec'),
-]
+// -- formatConversationTimestamp: two regimes, local calendar days ----------
 
-// -- formatConversationTimestamp: five regimes, local calendar days ---------
-
-describe('formatConversationTimestamp: five regimes', () => {
+describe('formatConversationTimestamp: the hour today, the day before that', () => {
   const now = localEpoch(2026, 8, 24, { hour: 15, minute: 30 })
 
-  test('regime 1, today: the time alone', () => {
+  test('same calendar day: the time alone', () => {
     const iso = new Date(localEpoch(2026, 8, 24, { hour: 9, minute: 15 })).toISOString()
-    const expected = new Date(iso)
-    const hh = String(expected.getHours()).padStart(2, '0')
-    const mm = String(expected.getMinutes()).padStart(2, '0')
-    expect(formatConversationTimestamp(iso, now)).toBe(`${hh}:${mm}`)
+    expect(formatConversationTimestamp(iso, now)).toBe('09:15')
   })
 
-  test('regime 1 also covers a future timestamp (clock skew clamps to "today")', () => {
+  test('a future timestamp (clock skew) still reads as a time', () => {
     const iso = new Date(localEpoch(2026, 8, 25, { hour: 9, minute: 0 })).toISOString()
     expect(formatConversationTimestamp(iso, now)).toMatch(/^\d{2}:\d{2}$/)
   })
 
-  test('regime 2, yesterday: "yesterday" plus the time', () => {
+  test('yesterday is already a date, zero-padded, day first', () => {
     const iso = new Date(localEpoch(2026, 8, 23, { hour: 9, minute: 15 })).toISOString()
-    expect(formatConversationTimestamp(iso, now)).toBe(t('time.yesterdayAt', { t: '09:15' }))
+    expect(formatConversationTimestamp(iso, now)).toBe('23/08')
   })
 
-  test('regime 3, 2 to 6 days: abbreviated weekday plus the time', () => {
-    const at = localEpoch(2026, 8, 20, { hour: 9, minute: 15 }) // 4 calendar days before `now`
-    const iso = new Date(at).toISOString()
-    const day = WEEKDAY[new Date(at).getDay()]
-    expect(formatConversationTimestamp(iso, now)).toBe(t('time.weekdayAt', { day, t: '09:15' }))
-  })
-
-  test('regime 3 boundary: exactly 6 days still reads as a weekday', () => {
-    const at = localEpoch(2026, 8, 18, { hour: 9, minute: 15 }) // 6 calendar days before `now`
-    const iso = new Date(at).toISOString()
-    const day = WEEKDAY[new Date(at).getDay()]
-    expect(formatConversationTimestamp(iso, now)).toBe(t('time.weekdayAt', { day, t: '09:15' }))
-  })
-
-  test('regime 4, same year, more than 6 days: abbreviated month plus day', () => {
+  test('an older day of the same year: the same day/month form', () => {
     const iso = new Date(localEpoch(2026, 1, 3, { hour: 9, minute: 15 })).toISOString()
-    expect(formatConversationTimestamp(iso, now)).toBe(
-      t('time.monthDay', { month: MONTH[0], day: '3' }),
-    )
+    expect(formatConversationTimestamp(iso, now)).toBe('03/01')
   })
 
-  test('regime 4 boundary: exactly 7 days already reads as month/day, not a weekday', () => {
-    const iso = new Date(localEpoch(2026, 8, 17, { hour: 9, minute: 15 })).toISOString()
-    expect(formatConversationTimestamp(iso, now)).toBe(
-      t('time.monthDay', { month: MONTH[7], day: '17' }),
-    )
-  })
-
-  test('regime 5, year elapsed: abbreviated month, day, and the year', () => {
+  test('a previous year reads the same: no year, no weekday, no month name', () => {
     const iso = new Date(localEpoch(2025, 12, 20, { hour: 9, minute: 15 })).toISOString()
-    expect(formatConversationTimestamp(iso, now)).toBe(
-      t('time.monthDayYear', { month: MONTH[11], day: '20', year: '2025' }),
-    )
+    expect(formatConversationTimestamp(iso, now)).toBe('20/12')
+  })
+
+  test('the format carries no translated word at all', () => {
+    const iso = new Date(localEpoch(2026, 8, 20, { hour: 9, minute: 15 })).toISOString()
+    expect(formatConversationTimestamp(iso, now)).toMatch(/^\d{2}\/\d{2}$/)
   })
 
   test('an unparsable timestamp renders nothing', () => {

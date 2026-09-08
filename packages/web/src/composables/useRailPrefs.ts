@@ -30,7 +30,7 @@ export const RAIL_LIST_WIDTH_DEFAULT = 360
 export const DEFAULT_RAIL_PREFS: RailPrefs = {
   listWidth: RAIL_LIST_WIDTH_DEFAULT,
   category: 'conversations',
-  navCollapsed: false,
+  navCollapsed: true,
   activeProjectId: null,
   activeRepoTab: 'branches',
 }

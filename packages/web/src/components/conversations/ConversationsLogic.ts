@@ -2,9 +2,9 @@
 // standalone. Two resolvers taken from the internal measurement notes and
 // adapted to OUR data model, rather than inventing fields we do not carry:
 //
-// - formatConversationTimestamp: the five-regime calendar-day timestamp
-//   (sheet §9), reusing clockTime (useTaskBoard.ts) for the HH:mm half so the
-//   24h convention stays the ONE place it is decided.
+// - formatConversationTimestamp: the line's right-hand date, reusing
+//   clockTime (useTaskBoard.ts) for the HH:mm half so the 24h convention
+//   stays the ONE place it is decided.
 // - orderConversations: the rail's ONE flat order (a conversation is not a
 //   child of a project), state precedence reused from
 //   queueSectionOf/compareByActivity (useTaskBoard.ts) rather than
@@ -17,52 +17,28 @@ import {
   type QueueSection,
 } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
-import { t, type MessageKey } from '../../i18n'
 
-// -- §9: five-regime timestamp, calendar days in LOCAL time -----------------
-
-const WEEKDAY_KEYS: readonly MessageKey[] = [
-  'time.weekdaySun',
-  'time.weekdayMon',
-  'time.weekdayTue',
-  'time.weekdayWed',
-  'time.weekdayThu',
-  'time.weekdayFri',
-  'time.weekdaySat',
-]
-
-const MONTH_KEYS: readonly MessageKey[] = [
-  'time.monthJan',
-  'time.monthFeb',
-  'time.monthMar',
-  'time.monthApr',
-  'time.monthMay',
-  'time.monthJun',
-  'time.monthJul',
-  'time.monthAug',
-  'time.monthSep',
-  'time.monthOct',
-  'time.monthNov',
-  'time.monthDec',
-]
+// -- Line timestamp: the hour today, the calendar day before that ----------
 
 const DAY_MS = 86_400_000
 
 /** Local midnight of the instant, as an epoch ms: the anchor calendar-day
  * arithmetic is computed against, so a diff never depends on the wall-clock
- * hour of either timestamp (that is the whole point of sheet §9, see the
- * file header). */
+ * hour of either timestamp. */
 function localMidnight(epochMs: number): number {
   const d = new Date(epochMs)
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
 
+function twoDigits(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
 /**
- * The five regimes of sheet §9: today (time alone), yesterday (plus time),
- * 2 to 6 days (abbreviated weekday plus time), same year (abbreviated month
- * plus day), year elapsed (plus year). `now` is an explicit parameter
- * (default the wall clock) so callers can render deterministically in
- * tests, same convention as relative-time.ts's own formatRelativeAge.
+ * Two regimes, both language-free: the hour for anything from the current
+ * calendar day, the day and month otherwise. `now` is an explicit parameter
+ * (default the wall clock) so callers can render deterministically in tests,
+ * same convention as relative-time.ts's own formatRelativeAge.
  *
  * A timestamp at or after `now` (clock skew, or one that has not happened
  * yet) collapses to the "today" regime rather than a negative day count.
@@ -72,25 +48,12 @@ export function formatConversationTimestamp(iso: string, now: number = Date.now(
   if (Number.isNaN(at)) {
     return ''
   }
-  const time = clockTime(iso)
   const dayDiff = Math.round((localMidnight(now) - localMidnight(at)) / DAY_MS)
   if (dayDiff <= 0) {
-    return time
-  }
-  if (dayDiff === 1) {
-    return t('time.yesterdayAt', { t: time })
-  }
-  if (dayDiff <= 6) {
-    const day = t(WEEKDAY_KEYS[new Date(at).getDay()] ?? 'time.weekdaySun')
-    return t('time.weekdayAt', { day, t: time })
+    return clockTime(iso)
   }
   const atDate = new Date(at)
-  const month = t(MONTH_KEYS[atDate.getMonth()] ?? 'time.monthJan')
-  const day = String(atDate.getDate())
-  if (atDate.getFullYear() === new Date(now).getFullYear()) {
-    return t('time.monthDay', { month, day })
-  }
-  return t('time.monthDayYear', { month, day, year: String(atDate.getFullYear()) })
+  return `${twoDigits(atDate.getDate())}/${twoDigits(atDate.getMonth() + 1)}`
 }
 
 // -- Flat order: state precedence, then most recent activity ----------------

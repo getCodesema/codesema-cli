@@ -126,7 +126,7 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
 // children of it, which is what keeps a navigation click from ever resizing
 // or moving the navigation itself.
 describe('the desk is three sibling zones', () => {
-  const bodyAt = SOURCE.indexOf('<div v-else class="ws-body shell"')
+  const bodyAt = SOURCE.indexOf('<div class="ws-body shell"')
   const stageAt = SOURCE.indexOf('<main class="ws-focus">')
 
   test('the rail and the list column both sit before the stage, unconditionally', () => {
@@ -148,6 +148,36 @@ describe('the desk is three sibling zones', () => {
     expect(column).toContain('v-else')
   })
 
+  // The header band is an ALIGNMENT of three column headers, never a bar
+  // above them: the rail and the list each draw their own, and the stage's
+  // app bar segment is mounted INSIDE the stage column, first thing.
+  test('the app bar segment is mounted inside the stage, ahead of everything it shows', () => {
+    const headerAt = SOURCE.indexOf('<WorkspaceHeader')
+    expect(headerAt).toBeGreaterThan(stageAt)
+    expect(headerAt).toBeLessThan(SOURCE.indexOf('v-else-if="reviewRecord"'))
+    // …and nothing above the columns: the shell is the root's only child.
+    const rootAt = SOURCE.indexOf('<div class="ws-root">')
+    const shellAt = SOURCE.indexOf('<div class="ws-body shell"')
+    expect(SOURCE.slice(rootAt, shellAt)).not.toContain('<WorkspaceHeader')
+  })
+
+  test('the header carries no brand and no settings wiring: the rail owns both', () => {
+    const headerTag = SOURCE.slice(
+      SOURCE.indexOf('<WorkspaceHeader'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<WorkspaceHeader')),
+    )
+    expect(headerTag).not.toContain('settings')
+    expect(headerTag).toContain(':agents="counters.agents"')
+    // The one settings entry left is the rail's.
+    expect(SOURCE.split('@settings="toggleSettings"')).toHaveLength(2)
+  })
+
+  test('the splitter still sits between the list column and the stage', () => {
+    const splitterAt = SOURCE.indexOf('<ForgeSplitter')
+    expect(splitterAt).toBeGreaterThan(SOURCE.indexOf('<aside class="ws-list"'))
+    expect(splitterAt).toBeLessThan(stageAt)
+  })
+
   test('only the list column is draggable, and it declares the rail bounds', () => {
     expect(SOURCE).toContain("'--ws-list-w': `${railPrefs.listWidth}px`")
     expect(SOURCE).toContain(':min="RAIL_LIST_WIDTH_MIN"')
@@ -162,8 +192,13 @@ describe('the desk is three sibling zones', () => {
 // conversation or draft comes next, a repository view after that, and the
 // sober invite is the unconditional fallback.
 describe('the stage shows exactly one thing, in a fixed priority', () => {
-  test('the four branches appear in priority order', () => {
-    const reviewAt = SOURCE.indexOf('v-if="reviewRecord"')
+  test('the five branches appear in priority order', () => {
+    // Settings first: they replace the stage's content, and the rail entry
+    // that opened them stays on screen to close them again.
+    const settingsAt = SOURCE.indexOf('v-if="showSettings"')
+    const reviewAt = SOURCE.indexOf('v-else-if="reviewRecord"')
+    expect(settingsAt).toBeGreaterThan(-1)
+    expect(settingsAt).toBeLessThan(reviewAt)
     const focusAt = SOURCE.indexOf('v-else-if="focusEntry"')
     const repositoryAt = SOURCE.indexOf('v-else-if="repositoryEntry"')
     const emptyAt = SOURCE.indexOf('class="ws-empty-focus"')

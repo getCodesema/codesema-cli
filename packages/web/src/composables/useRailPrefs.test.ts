@@ -56,6 +56,15 @@ describe('parseRailPrefs', () => {
     expect(parsed.activeProjectId).toBe('p1')
   })
 
+  test('the nav rail starts icons-only: collapsed is the default', () => {
+    expect(DEFAULT_RAIL_PREFS.navCollapsed).toBe(true)
+    expect(parseRailPrefs('{}').navCollapsed).toBe(true)
+  })
+
+  test('a reader who expanded the rail keeps it expanded', () => {
+    expect(parseRailPrefs(JSON.stringify({ navCollapsed: false })).navCollapsed).toBe(false)
+  })
+
   test('an unknown category or repo tab falls back to its default', () => {
     const parsed = parseRailPrefs(
       JSON.stringify({ category: 'projects', activeRepoTab: 'commits' }),
