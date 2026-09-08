@@ -1,7 +1,6 @@
 // Same harness as the other rail tests, on this component's own source.
-// Container query thresholds and the grid-based collapse are CSS-only,
-// unreachable through an SSR string render, so those are pinned by slicing
-// the raw source instead.
+// Container query thresholds are CSS-only, unreachable through an SSR string
+// render, so those are pinned by slicing the raw source instead.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
@@ -63,12 +62,11 @@ function taskState(recordOverrides: Partial<TaskRecord> = {}, projectId = 'p1'):
 
 type Props = {
   states: TaskState[]
-  projectNames: ReadonlyMap<string, string>
   focusedKeys: readonly string[]
 }
 
 function props(overrides: Partial<Props> = {}): Props {
-  return { states: [], projectNames: new Map(), focusedKeys: [], ...overrides }
+  return { states: [], focusedKeys: [], ...overrides }
 }
 
 async function render(overrides: Partial<Props> = {}): Promise<string> {
@@ -95,7 +93,7 @@ describe('header: the kit rail head, a title and a + action', () => {
     expect(block).not.toContain('background: var(')
   })
 
-  test('the total counter is gone: counting belongs to the project rows now', async () => {
+  test('no counter of any kind rides in the chrome', async () => {
     const html = await render({ states: [taskState({ id: 'a' }, 'p1')] })
     expect(html).not.toContain('cvl-count')
   })
@@ -126,13 +124,17 @@ describe('search field: borderless, glyph-led, its right padding still COMPUTED'
     expect(rule).toContain('border: 0;')
     expect(rule).toContain('background: transparent;')
   })
+
+  test('the filter runs on the shared matchesQuery, never a local title comparison', () => {
+    expect(SOURCE).toContain('matchesQuery(s.record, query.value)')
+  })
 })
 
 describe('empty states: no conversation at all vs. a search matching nothing', () => {
-  test('no conversation anywhere: the empty message, no groups', async () => {
+  test('no conversation anywhere: the empty message, no list', async () => {
     const html = await render({ states: [] })
     expect(html).toContain(t('conversations.empty'))
-    expect(html).not.toContain('cvl-group-head')
+    expect(html).not.toContain('cvl-row-btn')
   })
 
   test('conversations exist: no empty message', async () => {
@@ -150,74 +152,34 @@ describe('empty states: no conversation at all vs. a search matching nothing', (
   })
 })
 
-describe('grouping: one kit .proj row per project, its lines underneath', () => {
-  test('one group per project, named from the project map', async () => {
+describe('flat list: a conversation is not a child of a project', () => {
+  test('conversations of several projects share ONE list, with no project row', async () => {
     const html = await render({
       states: [
         taskState({ id: 'a' }, 'p1'),
         taskState({ id: 'b' }, 'p1'),
         taskState({ id: 'c' }, 'p2'),
       ],
-      projectNames: new Map([
-        ['p1', 'Codesema'],
-        ['p2', 'Nolyra'],
-      ]),
     })
-    expect(html).toContain('Codesema')
-    expect(html).toContain('Nolyra')
-    expect((html.match(/cvl-group-head proj/g) ?? []).length).toBe(2)
+    expect((html.match(/cvl-row-btn/g) ?? []).length).toBe(3)
+    expect(html).not.toContain('cvl-group')
+    expect(html).not.toContain('proj')
+    expect(html).not.toContain('aria-expanded')
   })
 
-  test('the project dot lights up when at least one conversation is running', async () => {
-    const running = await render({ states: [taskState({ id: 'a', status: 'running' }, 'p1')] })
-    expect(running).toContain('cvl-group-dot dot on')
-    expect(running).toContain(G.dot)
-
-    const idle = await render({ states: [taskState({ id: 'a', status: 'queued' }, 'p1')] })
-    expect(idle).not.toContain('cvl-group-dot dot on')
-    expect(idle).toContain(G.pending)
+  test('a conversation carrying no project renders like any other line', async () => {
+    const html = await render({ states: [taskState({ id: 'orphan', title: 'no project' }, '')] })
+    expect(html).toContain('no project')
+    expect((html.match(/cvl-row-btn/g) ?? []).length).toBe(1)
   })
 
-  test('the counters read waiting-then-running, waiting emphasised', async () => {
-    const html = await render({
-      states: [
-        taskState({ id: 'a', status: 'waiting_for_you' }, 'p1'),
-        taskState({ id: 'b', status: 'waiting_for_you' }, 'p1'),
-        taskState({ id: 'c', status: 'running' }, 'p1'),
-        taskState({ id: 'd', status: 'reviewing' }, 'p1'),
-        taskState({ id: 'e', status: 'reviewing' }, 'p1'),
-      ],
-    })
-    const counter = html.slice(html.indexOf('cvl-group-count'))
-    expect(counter).toContain('<b>2</b>')
-    expect(counter).toContain(G.sep)
-    expect(counter).toContain('3')
-  })
-
-  test('a project with nothing waiting and nothing running shows a dash', async () => {
-    const html = await render({ states: [taskState({ id: 'a', status: 'shipped' }, 'p1')] })
-    expect(html.slice(html.indexOf('cvl-group-count'))).toContain(G.minus)
-  })
-
-  test('the waiting half is the warn tone, straight from the kit .cnt b rule', () => {
-    expect(SOURCE).toContain('class="cvl-group-count cnt"')
-    expect(SOURCE).not.toContain('var(--warn)')
-  })
-
-  test('groups are expanded by default: aria-expanded true, no closed body', async () => {
-    const html = await render({ states: [taskState({ id: 'a' }, 'p1')] })
-    expect(html).toContain('aria-expanded="true"')
-    expect(html).not.toContain('cvl-group-body--closed')
+  test('the project name is never read here: no such prop, no such lookup', () => {
+    expect(SOURCE).not.toContain('projectNames')
+    expect(SOURCE).not.toContain('projectName')
   })
 })
 
 describe('lines: one conversation, one inset line between two hairlines', () => {
-  test('the lines sit in the kit .sub block, without tree glyphs', async () => {
-    const html = await render({ states: [taskState({ id: 'a' }, 'p1')] })
-    expect(html).toContain('class="cvl-group-body-inner sub"')
-    expect(SOURCE).not.toContain("content: '\u251c\u2500 ';")
-  })
-
   test('a line is framed by a top hairline (and a bottom one on the last), inset from the rail edges', () => {
     const rule = SOURCE.slice(
       SOURCE.indexOf('.cvl-row-btn {'),
@@ -232,21 +194,53 @@ describe('lines: one conversation, one inset line between two hairlines', () => 
     expect(rule).not.toContain('box-shadow')
   })
 
-  test('project rows are spaced by one text line, never by a gap of pixels', () => {
-    const rule = SOURCE.slice(SOURCE.indexOf('.cvl-group {'), SOURCE.indexOf('.cvl-group-head {'))
-    expect(rule).toContain('margin-top: var(--row);')
+  test('the list is spaced by text lines, never by a gap of pixels', () => {
+    const rule = SOURCE.slice(SOURCE.indexOf('.cvl-list {'), SOURCE.indexOf('@container'))
+    expect(rule).toContain('padding: calc(var(--row) / 2) 0;')
+    expect(rule).not.toMatch(/padding:[^;]*\d+px/)
   })
 })
 
 describe('ordering: attention first, straight from the shared logic', () => {
-  test('a waiting conversation is listed before a shipped one', async () => {
+  test('the order comes from orderConversations, not a local sort', () => {
+    expect(SOURCE).toContain('orderConversations(filteredStates.value)')
+    expect(SOURCE).not.toContain('.toSorted(')
+  })
+
+  test('waiting, then running, then queued, then finished', async () => {
     const html = await render({
       states: [
-        taskState({ id: 'zz', title: 'shipped one', status: 'shipped' }, 'p1'),
-        taskState({ id: 'aa', title: 'waiting one', status: 'waiting_for_you' }, 'p1'),
+        taskState({ id: 'd', title: 'shipped one', status: 'shipped' }, 'p1'),
+        taskState({ id: 'c', title: 'queued one', status: 'queued' }, 'p1'),
+        taskState({ id: 'b', title: 'running one', status: 'running' }, 'p1'),
+        taskState({ id: 'a', title: 'waiting one', status: 'waiting_for_you' }, 'p1'),
       ],
     })
-    expect(html.indexOf('waiting one')).toBeLessThan(html.indexOf('shipped one'))
+    expect(html.indexOf('waiting one')).toBeLessThan(html.indexOf('running one'))
+    expect(html.indexOf('running one')).toBeLessThan(html.indexOf('shipped one'))
+    expect(html.indexOf('queued one')).toBeLessThan(html.indexOf('shipped one'))
+  })
+
+  test('the finished pile opens on a single break, never a titled section', async () => {
+    const html = await render({
+      states: [
+        taskState({ id: 'a', status: 'running' }, 'p1'),
+        taskState({ id: 'b', status: 'shipped' }, 'p1'),
+        taskState({ id: 'c', status: 'failed' }, 'p1'),
+      ],
+    })
+    expect((html.match(/cvl-row-btn--finished-start/g) ?? []).length).toBe(1)
+    const rule = SOURCE.slice(
+      SOURCE.indexOf('.cvl-row-btn--finished-start {'),
+      SOURCE.indexOf('.cvl-row-btn:hover {'),
+    )
+    expect(rule).toContain('margin-top: calc(var(--row) / 2);')
+    expect(rule).not.toContain('border-top: 2px')
+  })
+
+  test('nothing finished: no break at all', async () => {
+    const html = await render({ states: [taskState({ id: 'a', status: 'running' }, 'p1')] })
+    expect(html).not.toContain('cvl-row-btn--finished-start')
   })
 })
 
@@ -297,6 +291,17 @@ describe('selection: highlighted rows come from the focus deck, not a single sel
   })
 })
 
+describe('actions: the + emits create, a line emits select', () => {
+  test('the header action emits create and the line emits select with its state', () => {
+    expect(SOURCE).toContain('@click="emit(\'create\')"')
+    expect(SOURCE).toContain('@click="emit(\'select\', state)"')
+  })
+
+  test('Cmd/Ctrl+K still reaches the search box through focusSearch', () => {
+    expect(SOURCE).toContain('defineExpose({ focusSearch: () => searchInput.value?.focus() })')
+  })
+})
+
 describe('root: no fixed width, occupies the parent slot', () => {
   test('the root style carries no width/min-width/max-width pixel values', () => {
     const root = SOURCE.slice(SOURCE.indexOf('.cvl-root {'), SOURCE.indexOf('.cvl-header {'))
@@ -324,13 +329,6 @@ describe('degradation thresholds: CSS-pinned, same values as the sheet', () => {
     expect(rule).toContain('display: none;')
   })
 
-  test('the project counters hide under 200px', () => {
-    const at = SOURCE.indexOf('@container cvl-shell (max-width: 200px)')
-    const rule = SOURCE.slice(at, at + 120)
-    expect(rule).toContain('.cvl-group-count')
-    expect(rule).toContain('display: none;')
-  })
-
   test('the container is self-named on the panel root, matching what the queries above target', () => {
     const root = SOURCE.slice(SOURCE.indexOf('.cvl-root {'), SOURCE.indexOf('.cvl-header {'))
     expect(root).toContain('container-type: inline-size;')
@@ -338,32 +336,10 @@ describe('degradation thresholds: CSS-pinned, same values as the sheet', () => {
   })
 })
 
-describe('group collapse: a 1fr/0fr grid track, inert when closed', () => {
-  test('the closed body track goes to 0fr and is hidden, never a fixed height', () => {
-    const closed = SOURCE.slice(
-      SOURCE.indexOf('.cvl-group-body--closed {'),
-      SOURCE.indexOf('.cvl-group-body-inner {'),
-    )
-    expect(closed).toContain('grid-template-rows: 0fr;')
-    expect(closed).toContain('visibility: hidden;')
-    expect(closed).not.toContain('height:')
-  })
-
-  test('the toggle is the project row itself, still announced as expandable', () => {
-    expect(SOURCE).toContain('@click="toggleGroup(group.projectId)"')
-    expect(SOURCE).toContain(':aria-expanded="isOpen(group.projectId)"')
-    expect(SOURCE).not.toContain('chevron')
-  })
-
-  test('the template binds `inert` to the closed state, not merely a CSS class', () => {
-    expect(SOURCE).toContain(':inert="!isOpen(group.projectId)"')
-  })
-})
-
 describe('imports: reuses ConversationsLogic.ts and ConversationRow.vue unmodified', () => {
   test('the logic helpers are imported from the conversations directory, not reimplemented', () => {
     expect(SOURCE).toContain("from '../conversations/ConversationsLogic'")
-    expect(SOURCE).toContain('groupConversationsByProject')
+    expect(SOURCE).toContain('orderConversations')
     expect(SOURCE).toContain('searchRightPadding')
   })
 

@@ -1,13 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { statusPhraseKey } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
 import { t } from '../../i18n'
-import type { TaskEvent, TaskRecord } from '../../types'
+import type { TaskRecord } from '../../types'
 import {
   formatConversationTimestamp,
-  groupConversationsByProject,
-  resolveActivityLine,
-  resolveChecksPill,
+  orderConversations,
   searchRightPadding,
 } from './ConversationsLogic'
 
@@ -49,10 +46,6 @@ function taskState(
     checks: null,
     ...stateOverrides,
   }
-}
-
-function questionEvent(question: string, seq = 1): TaskEvent {
-  return { seq, at: '2026-08-13T10:05:00.000Z', type: 'question', data: { question } }
 }
 
 /** A Date built from LOCAL wall-clock components, converted to epoch ms: used
@@ -155,36 +148,17 @@ describe('formatConversationTimestamp: five regimes', () => {
   })
 })
 
-// -- groupConversationsByProject: project first, then state precedence ------
+// -- orderConversations: one flat order, no project grouping ----------------
 
-describe('groupConversationsByProject', () => {
-  test('groups are ordered alphabetically by project display name', () => {
-    const states = [
-      taskState({ id: 'a' }, { projectId: 'zebra' }),
-      taskState({ id: 'b' }, { projectId: 'alpha' }),
-    ]
-    const names = new Map([
-      ['zebra', 'Zebra Repo'],
-      ['alpha', 'Alpha Repo'],
-    ])
-    const groups = groupConversationsByProject(states, names)
-    expect(groups.map((g) => g.projectId)).toEqual(['alpha', 'zebra'])
-  })
-
-  test('an unknown project id falls back to itself as the display name', () => {
-    const groups = groupConversationsByProject([taskState({}, { projectId: 'p9' })], new Map())
-    expect(groups[0]?.projectName).toBe('p9')
-  })
-
-  test('within a project, rows are ordered attention > active > ready > done', () => {
+describe('orderConversations', () => {
+  test('lines are ordered attention > active > ready > done', () => {
     const states = [
       taskState({ id: 'done1', status: 'shipped', updated_at: '2026-08-20T00:00:00.000Z' }),
       taskState({ id: 'ready1', status: 'review_ok', updated_at: '2026-08-20T00:00:00.000Z' }),
       taskState({ id: 'active1', status: 'running', updated_at: '2026-08-20T00:00:00.000Z' }),
       taskState({ id: 'attn1', status: 'waiting_for_you', updated_at: '2026-08-20T00:00:00.000Z' }),
     ]
-    const groups = groupConversationsByProject(states, new Map())
-    expect(groups[0]?.states.map((s) => s.record.id)).toEqual([
+    expect(orderConversations(states).map((s) => s.record.id)).toEqual([
       'attn1',
       'active1',
       'ready1',
@@ -197,279 +171,34 @@ describe('groupConversationsByProject', () => {
       taskState({ id: 'older', status: 'running', updated_at: '2026-08-01T00:00:00.000Z' }),
       taskState({ id: 'newer', status: 'running', updated_at: '2026-08-20T00:00:00.000Z' }),
     ]
-    const groups = groupConversationsByProject(states, new Map())
-    expect(groups[0]?.states.map((s) => s.record.id)).toEqual(['newer', 'older'])
+    expect(orderConversations(states).map((s) => s.record.id)).toEqual(['newer', 'older'])
   })
 
-  test('an empty input yields no groups at all', () => {
-    expect(groupConversationsByProject([], new Map())).toEqual([])
-  })
-})
-
-// -- resolveActivityLine: one ordered resolver, static vs pulse vs spin -----
-
-describe('resolveActivityLine: the motion rule (static waits on a human, pulse/spin works)', () => {
-  test('interrupted: static, paused', () => {
-    const state = taskState({ status: 'interrupted' })
-    const line = resolveActivityLine(state)
-    expect(line.motion).toBe('static')
-    expect(line.glyph).toBe('pause')
-    expect(line.text).toBe(t(statusPhraseKey(state.record, false)))
+  test('the project plays no part: conversations of several projects interleave by state', () => {
+    const states = [
+      taskState(
+        { id: 'zdone', status: 'shipped', updated_at: '2026-08-20T00:00:00.000Z' },
+        { projectId: 'alpha' },
+      ),
+      taskState(
+        { id: 'zattn', status: 'waiting_for_you', updated_at: '2026-08-20T00:00:00.000Z' },
+        { projectId: 'zebra' },
+      ),
+    ]
+    expect(orderConversations(states).map((s) => s.record.id)).toEqual(['zattn', 'zdone'])
   })
 
-  test('review_ko: static, a blocked review to read', () => {
-    const state = taskState({ status: 'review_ko' })
-    const line = resolveActivityLine(state)
-    expect(line.motion).toBe('static')
-    expect(line.glyph).toBe('shield-alert')
-    expect(line.text).toBe(t(statusPhraseKey(state.record, false)))
+  test('an empty input yields an empty list', () => {
+    expect(orderConversations([])).toEqual([])
   })
 
-  test('waiting_for_you with an open question: static, the question itself as text', () => {
-    const state = taskState(
-      { status: 'waiting_for_you' },
-      { events: [questionEvent('should this be async?')] },
-    )
-    const line = resolveActivityLine(state)
-    expect(line.motion).toBe('static')
-    expect(line.glyph).toBe('question')
-    expect(line.text).toBe(t('conversations.questionExcerpt', { q: 'should this be async?' }))
-  })
-
-  test('waiting_for_you with no question (a merge-gate hold): static, the status phrase', () => {
-    const state = taskState({
-      status: 'waiting_for_you',
-      reason: { code: 'merge_conflict', detail: 'the branch conflicts' },
-    })
-    const line = resolveActivityLine(state)
-    expect(line.motion).toBe('static')
-    expect(line.glyph).toBe('circle-alert')
-    expect(line.text).toBe(t(statusPhraseKey(state.record, false)))
-  })
-
-  test('review_ok: static, ready to ship', () => {
-    const state = taskState({ status: 'review_ok' })
-    const line = resolveActivityLine(state)
-    expect(line.motion).toBe('static')
-    expect(line.glyph).toBe('check')
-  })
-
-  test('reviewing: SPIN, never static, never a plain pulse', () => {
-    const state = taskState({ status: 'reviewing' })
-    const line = resolveActivityLine(state)
-    expect(line.motion).toBe('spin')
-    expect(line.glyph).toBe('refresh')
-  })
-
-  test('running: PULSE, the agent is alive and working', () => {
-    const state = taskState({ status: 'running' })
-    const line = resolveActivityLine(state)
-    expect(line.motion).toBe('pulse')
-    expect(line.glyph).toBe('dot')
-  })
-
-  test('queued: static, idle, ordinary phrasing when no machine cap is in play', () => {
-    const state = taskState({ status: 'queued' }, { liveLoadCap: null })
-    const line = resolveActivityLine(state)
-    expect(line.motion).toBe('static')
-    expect(line.glyph).toBe('clock')
-    expect(line.text).toBe(t(statusPhraseKey(state.record, false)))
-  })
-
-  test('queued while waiting for a machine-wide slot: the phrase changes to say so', () => {
-    const waiting = taskState(
-      { status: 'queued' },
-      { liveLoadCap: { occupied: 4, max: 4, queued: 1, waitingForSlot: true } },
-    )
-    const idle = taskState({ status: 'queued' }, { liveLoadCap: null })
-    expect(resolveActivityLine(waiting).text).not.toBe(resolveActivityLine(idle).text)
-    expect(resolveActivityLine(waiting).text).toBe(t(statusPhraseKey(waiting.record, true)))
-  })
-
-  test('shipped (fallback): static, the terminal check glyph', () => {
-    const state = taskState({ status: 'shipped' })
-    const line = resolveActivityLine(state)
-    expect(line.motion).toBe('static')
-    expect(line.glyph).toBe('check')
-  })
-
-  test('failed (fallback): static, the terminal x glyph', () => {
-    const state = taskState({ status: 'failed' })
-    const line = resolveActivityLine(state)
-    expect(line.motion).toBe('static')
-    expect(line.glyph).toBe('x')
-  })
-})
-
-// -- resolveChecksPill: sheet §7's precedence, adapted to checks + reason ---
-
-describe('resolveChecksPill: rank 0 (shipped) short-circuits everything', () => {
-  test('shipped with failed checks still shows no pill', () => {
-    const state = taskState(
-      { status: 'shipped' },
-      {
-        checks: {
-          head_sha: 'x',
-          started_at: '',
-          finished_at: null,
-          status: 'failed',
-          checks: [],
-          error: null,
-        },
-      },
-    )
-    expect(resolveChecksPill(state)).toBeNull()
-  })
-})
-
-describe('resolveChecksPill: rank 1, failure outranks everything else', () => {
-  test('failed checks alone: a red x pill', () => {
-    const state = taskState(
-      { status: 'running' },
-      {
-        checks: {
-          head_sha: 'x',
-          started_at: '',
-          finished_at: null,
-          status: 'failed',
-          checks: [],
-          error: null,
-        },
-      },
-    )
-    expect(resolveChecksPill(state)).toEqual({
-      tone: 'red',
-      glyph: 'x',
-      text: t('conversations.checksFailed'),
-    })
-  })
-
-  test('a checks run that could not even start (error) reads the same as a failure', () => {
-    const state = taskState(
-      { status: 'running' },
-      {
-        checks: {
-          head_sha: 'x',
-          started_at: '',
-          finished_at: null,
-          status: 'error',
-          checks: [],
-          error: 'boom',
-        },
-      },
-    )
-    expect(resolveChecksPill(state)?.tone).toBe('red')
-  })
-
-  test('failure beats a simultaneous merge conflict', () => {
-    const state = taskState(
-      { status: 'running', reason: { code: 'merge_conflict' } },
-      {
-        checks: {
-          head_sha: 'x',
-          started_at: '',
-          finished_at: null,
-          status: 'failed',
-          checks: [],
-          error: null,
-        },
-      },
-    )
-    expect(resolveChecksPill(state)?.glyph).toBe('x')
-  })
-
-  test('the persisted checks_status is read when no live checks mirror exists', () => {
-    const state = taskState({ status: 'running', checks_status: 'failed' })
-    expect(resolveChecksPill(state)?.tone).toBe('red')
-  })
-})
-
-describe('resolveChecksPill: rank 2, a merge conflict beats running and passed, never failure', () => {
-  test('conflict beats a passed run', () => {
-    const state = taskState(
-      { status: 'running', reason: { code: 'merge_conflict' } },
-      {
-        checks: {
-          head_sha: 'x',
-          started_at: '',
-          finished_at: null,
-          status: 'passed',
-          checks: [],
-          error: null,
-        },
-      },
-    )
-    expect(resolveChecksPill(state)).toEqual({
-      tone: 'red',
-      glyph: 'alert-triangle',
-      text: t('conversations.checksConflict'),
-    })
-  })
-
-  test('a reason code other than merge_conflict does not trigger the conflict pill', () => {
-    const state = taskState({ status: 'running', reason: { code: 'agent_error' } })
-    expect(resolveChecksPill(state)).toBeNull()
-  })
-})
-
-describe('resolveChecksPill: rank 3, running is reported STATIC (never a motion field)', () => {
-  test('a run in flight: an amber dot pill', () => {
-    const state = taskState(
-      { status: 'running' },
-      {
-        checks: {
-          head_sha: 'x',
-          started_at: '',
-          finished_at: null,
-          status: 'running',
-          checks: [],
-          error: null,
-        },
-      },
-    )
-    expect(resolveChecksPill(state)).toEqual({
-      tone: 'amber',
-      glyph: 'dot',
-      text: t('conversations.checksRunning'),
-    })
-    // The type carries no `motion`: nothing in this pill can ever be told to
-    // spin or pulse, movement stays reserved for the activity line (§7's own
-    // point, enforced structurally rather than by a runtime flag).
-    expect('motion' in (resolveChecksPill(state) as object)).toBe(false)
-  })
-})
-
-describe('resolveChecksPill: rank 4, passed', () => {
-  test('a clean run: a green check pill', () => {
-    const state = taskState(
-      { status: 'running' },
-      {
-        checks: {
-          head_sha: 'x',
-          started_at: '',
-          finished_at: null,
-          status: 'passed',
-          checks: [],
-          error: null,
-        },
-      },
-    )
-    expect(resolveChecksPill(state)).toEqual({
-      tone: 'green',
-      glyph: 'check',
-      text: t('conversations.checksPassed'),
-    })
-  })
-})
-
-describe('resolveChecksPill: nothing to show', () => {
-  test('unconfigured, no conflict, not shipped: no pill', () => {
-    const state = taskState({ status: 'running', checks_status: 'unconfigured' })
-    expect(resolveChecksPill(state)).toBeNull()
-  })
-
-  test('no checks have ever run and nothing else applies: no pill', () => {
-    expect(resolveChecksPill(taskState({ status: 'running' }))).toBeNull()
+  test('the input array is never mutated', () => {
+    const states = [
+      taskState({ id: 'done1', status: 'shipped' }),
+      taskState({ id: 'attn1', status: 'waiting_for_you' }),
+    ]
+    orderConversations(states)
+    expect(states.map((s) => s.record.id)).toEqual(['done1', 'attn1'])
   })
 })
 

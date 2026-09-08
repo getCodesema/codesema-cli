@@ -1,27 +1,22 @@
 <script setup lang="ts">
-// Zone 2a of the 3-zone workspace layout: the kit's project rail
-// (`.rail/.rail-h/.proj/.sub`) fed by our conversations. A header line, one
-// `.proj` row per project, and under it one plain tree line per
-// conversation. The parent slot sizes it (no own width, no splitter).
-// Search, grouping and row rendering stay on
-// groupConversationsByProject/searchRightPadding (ConversationsLogic.ts) and
+// Zone 2a of the 3-zone workspace layout: the kit's rail (`.rail/.rail-h`)
+// fed by our conversations. A conversation is NOT a child of a project: this
+// is one flat list of lines, and a conversation with no project is listed
+// like any other. The project of the open conversation is shown by its
+// thread header, never here. Ordering and row rendering stay on
+// orderConversations/searchRightPadding (ConversationsLogic.ts) and
 // ConversationRow.vue, imported one directory over rather than
 // reimplemented.
 import { computed, ref } from 'vue'
-import { matchesQuery } from '../../composables/useTaskBoard'
+import { matchesQuery, queueSectionOf } from '../../composables/useTaskBoard'
 import { taskKey, type TaskState } from '../../composables/useTasks'
-import { EXECUTION_STATUS } from '../../execution-status'
 import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import ConversationRow from '../conversations/ConversationRow.vue'
-import {
-  groupConversationsByProject,
-  searchRightPadding,
-} from '../conversations/ConversationsLogic'
+import { orderConversations, searchRightPadding } from '../conversations/ConversationsLogic'
 
 const props = defineProps<{
   states: TaskState[]
-  projectNames: ReadonlyMap<string, string>
   /** taskKeys of every conversation currently open in the focus deck. Ours is
    *  a DECK, not a single selection: several conversations can be pinned side
    *  by side, so a row is highlighted when its key is in this list. */
@@ -45,7 +40,7 @@ const filteredStates = computed(() =>
     ? props.states
     : props.states.filter((s) => matchesQuery(s.record, query.value)),
 )
-const groups = computed(() => groupConversationsByProject(filteredStates.value, props.projectNames))
+const orderedStates = computed(() => orderConversations(filteredStates.value))
 
 const isEmpty = computed(() => props.states.length === 0)
 const isSearchEmpty = computed(() => props.states.length > 0 && filteredStates.value.length === 0)
@@ -54,28 +49,10 @@ const isSearchEmpty = computed(() => props.states.length > 0 && filteredStates.v
 // typed): the padding is still COMPUTED, never a fixed number.
 const searchPaddingRight = computed(() => searchRightPadding(query.value !== '' ? 1 : 0))
 
-function waitingCount(states: readonly TaskState[]): number {
-  return states.filter((s) => EXECUTION_STATUS[s.record.status].attention).length
-}
-
-function runningCount(states: readonly TaskState[]): number {
-  return states.filter((s) => EXECUTION_STATUS[s.record.status].pulse).length
-}
-
-// Collapsed project ids; absence = open (every group starts expanded).
-const collapsedProjects = ref<ReadonlySet<string>>(new Set())
-function isOpen(projectId: string): boolean {
-  return !collapsedProjects.value.has(projectId)
-}
-function toggleGroup(projectId: string): void {
-  const next = new Set(collapsedProjects.value)
-  if (next.has(projectId)) {
-    next.delete(projectId)
-  } else {
-    next.add(projectId)
-  }
-  collapsedProjects.value = next
-}
+const firstFinishedKey = computed(() => {
+  const first = orderedStates.value.find((s) => queueSectionOf(s.record.status) === 'done')
+  return first ? taskKey(first.projectId, first.record.id) : null
+})
 
 function isSelected(state: TaskState): boolean {
   return props.focusedKeys.includes(taskKey(state.projectId, state.record.id))
@@ -125,55 +102,22 @@ function isSelected(state: TaskState): boolean {
         {{ t('conversations.searchEmpty') }}
       </p>
 
-      <div v-for="group in groups" :key="group.projectId" class="cvl-group">
+      <div v-else class="cvl-list">
         <button
+          v-for="state in orderedStates"
+          :key="taskKey(state.projectId, state.record.id)"
           type="button"
-          class="cvl-group-head proj"
-          :aria-expanded="isOpen(group.projectId)"
-          :aria-controls="`cvl-body-${group.projectId}`"
-          :aria-label="t('conversations.groupToggleAria', { project: group.projectName })"
-          @click="toggleGroup(group.projectId)"
+          class="cvl-row-btn"
+          :class="{
+            'cvl-row-btn--selected': isSelected(state),
+            'cvl-row-btn--finished-start':
+              taskKey(state.projectId, state.record.id) === firstFinishedKey,
+          }"
+          :aria-current="isSelected(state) ? 'true' : undefined"
+          @click="emit('select', state)"
         >
-          <span
-            class="cvl-group-dot dot"
-            :class="{ on: runningCount(group.states) > 0 }"
-            aria-hidden="true"
-            >{{ runningCount(group.states) > 0 ? G.dot : G.pending }}</span
-          >
-          <span class="cvl-group-name name">{{ group.projectName }}</span>
-          <span class="cvl-group-count cnt">
-            <b v-if="waitingCount(group.states) > 0">{{ waitingCount(group.states) }}</b>
-            <template v-if="waitingCount(group.states) > 0 && runningCount(group.states) > 0">
-              {{ G.sep }}
-            </template>
-            <template v-if="runningCount(group.states) > 0">{{
-              runningCount(group.states)
-            }}</template>
-            <template v-if="waitingCount(group.states) === 0 && runningCount(group.states) === 0">{{
-              G.minus
-            }}</template>
-          </span>
+          <ConversationRow :state="state" />
         </button>
-        <div
-          :id="`cvl-body-${group.projectId}`"
-          class="cvl-group-body"
-          :class="{ 'cvl-group-body--closed': !isOpen(group.projectId) }"
-          :inert="!isOpen(group.projectId)"
-        >
-          <div class="cvl-group-body-inner sub">
-            <button
-              v-for="state in group.states"
-              :key="taskKey(state.projectId, state.record.id)"
-              type="button"
-              class="cvl-row-btn"
-              :class="{ 'cvl-row-btn--selected': isSelected(state) }"
-              :aria-current="isSelected(state) ? 'true' : undefined"
-              @click="emit('select', state)"
-            >
-              <ConversationRow :state="state" />
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   </section>
@@ -270,24 +214,10 @@ function isSelected(state: TaskState): boolean {
   margin: calc(var(--row) / 2) 2ch;
 }
 
-.cvl-group {
-  margin-top: var(--row);
-}
-
-.cvl-group-head {
-  width: 100%;
-  text-align: left;
-  font: inherit;
-  border: 0;
-  background: transparent;
-  color: var(--fg-dim);
-}
-
-.cvl-group-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.cvl-list {
+  display: flex;
+  flex-direction: column;
+  padding: calc(var(--row) / 2) 0;
 }
 
 /* Threshold 1: under 256px each line drops its age column. */
@@ -295,39 +225,6 @@ function isSelected(state: TaskState): boolean {
   .cvl-row-btn :deep(.cvr-age) {
     display: none;
   }
-}
-
-/* Threshold 2: under 200px the project counters go too, so the project name
-   never collides with them. */
-@container cvl-shell (max-width: 200px) {
-  .cvl-group-count {
-    display: none;
-  }
-}
-
-/* The 1fr/0fr grid track: animates toward an unmeasured height, never a
-   guessed pixel value. `inert` (bound in the template) drops the closed
-   body from keyboard navigation for real. NEVER animation-fill-mode here
-   (package-wide guard, styles.test.ts). */
-.cvl-group-body {
-  display: grid;
-  grid-template-rows: 1fr;
-  transition: grid-template-rows 150ms ease;
-}
-
-.cvl-group-body--closed {
-  grid-template-rows: 0fr;
-  visibility: hidden;
-}
-
-/* The kit's `.sub` indent is redrawn per line instead of on the block, so a
-   hovered or selected line fills the rail edge to edge. */
-.cvl-group-body-inner {
-  overflow: hidden;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 0;
 }
 
 .cvl-row-btn {
@@ -347,6 +244,12 @@ function isSelected(state: TaskState): boolean {
 
 .cvl-row-btn:last-child {
   border-bottom: 1px solid var(--line);
+}
+
+/* The only break in the flat list: one blank half-line before the finished
+   pile, the hairline already on the row doing the separating. */
+.cvl-row-btn--finished-start {
+  margin-top: calc(var(--row) / 2);
 }
 
 .cvl-row-btn:hover {

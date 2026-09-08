@@ -1001,7 +1001,6 @@ watch(
           v-if="railPrefs.category === 'conversations'"
           ref="conversationsList"
           :states="queueStates"
-          :project-names="projectNameById"
           :focused-keys="focusedKeys"
           @select="(state) => openConversation(state.projectId, state.record.id)"
           @create="onNewConversation"

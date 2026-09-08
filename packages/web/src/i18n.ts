@@ -798,12 +798,6 @@ const en = {
   'conversations.searchClear': 'Clear the search',
   'conversations.empty': 'No conversation yet.',
   'conversations.searchEmpty': 'No conversation matches this search.',
-  'conversations.groupToggleAria': 'Show or hide the {project} group',
-  'conversations.questionExcerpt': '“{q}”',
-  'conversations.checksPassed': 'Checks passed',
-  'conversations.checksFailed': 'Checks failed',
-  'conversations.checksRunning': 'Checks running',
-  'conversations.checksConflict': 'Merge conflict',
 
   // --- Navigation rail: two categories, a list column, a pinned footer ---
   'rail.conversations': 'Conversation',
@@ -1716,12 +1710,6 @@ const fr: Record<MessageKey, string> = {
   'conversations.searchClear': 'Effacer la recherche',
   'conversations.empty': 'Aucune conversation pour le moment.',
   'conversations.searchEmpty': 'Aucune conversation ne correspond à cette recherche.',
-  'conversations.groupToggleAria': 'Afficher ou masquer le groupe {project}',
-  'conversations.questionExcerpt': '« {q} »',
-  'conversations.checksPassed': 'Vérifications réussies',
-  'conversations.checksFailed': 'Vérifications échouées',
-  'conversations.checksRunning': 'Vérifications en cours',
-  'conversations.checksConflict': 'Conflit de fusion',
 
   // --- Navigation rail: two categories, a list column, a pinned footer ---
   'rail.conversations': 'Conversation',

@@ -100,8 +100,8 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
     expect(SOURCE).toContain(':states="orderedStates"')
   })
 
-  test('the list gets its project names and its selected row from this view', () => {
-    expect(SOURCE).toContain(':project-names="projectNameById"')
+  test('the list gets its selected row from this view, and no project of any kind', () => {
+    expect(SOURCE).not.toContain('project-names')
     expect(SOURCE).toContain(':focused-keys="focusedKeys"')
     expect(SOURCE).toContain(
       'taskKey(selectedState.value.projectId, selectedState.value.record.id)',

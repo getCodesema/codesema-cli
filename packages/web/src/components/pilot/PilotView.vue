@@ -28,10 +28,6 @@ function onSwitchShell(): void {
 
 const orderedStates = computed(() => orderCards(tasks.states.value))
 const counts = computed(() => agentCounts(tasks.states.value))
-const projectNameById = computed(
-  () => new Map(tasks.projects.value.map((project) => [project.id, project.name])),
-)
-
 // ── Hydration: recap/evidence/verification/checks, fetched once per visible
 // task ─────────────────────────────────────────────────────────────────
 // Full event history is heavier and only ever read in the open conversation,
@@ -199,7 +195,6 @@ function onPick(option: string): void {
       <ConversationsList
         class="pv-list"
         :states="orderedStates"
-        :project-names="projectNameById"
         :focused-keys="focusedKeys"
         @select="onSelect"
         @create="onSwitchShell"
