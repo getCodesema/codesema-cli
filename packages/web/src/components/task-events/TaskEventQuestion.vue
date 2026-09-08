@@ -5,8 +5,9 @@
 // (ctx.active). The reply field (and the quick-reply buttons) live in the
 // conversation, which focuses the composer when the task waits.
 import { computed } from 'vue'
-import { firstString, splitInlineCode, timeAgo } from '../../composables/useTaskBoard'
+import { firstString, splitInlineCode } from '../../composables/useTaskBoard'
 import { t } from '../../i18n'
+import { formatExactStamp, formatRelativeAge } from '../../relative-time'
 import type { TaskEventCtx } from '../../task-event-registry'
 import type { TaskEvent, TaskRecord } from '../../types'
 
@@ -16,11 +17,12 @@ const question = computed(
   () => firstString(props.event.data, ['question', 'text', 'summary']) ?? t('workspace.evQuestion'),
 )
 const segments = computed(() => splitInlineCode(question.value))
-const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
+const ago = computed(() => formatRelativeAge(props.event.at, props.ctx.now))
+const exact = computed(() => formatExactStamp(props.event.at))
 </script>
 
 <template>
-  <div class="tvq-root">
+  <div class="tvq-root" :title="exact">
     <p class="tvq-meta">
       <span
         >{{ t('workspace.agentLabel') }}<template v-if="ago"> · {{ ago }}</template></span

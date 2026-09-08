@@ -6,6 +6,7 @@
 import { computed } from 'vue'
 import { clockTime, eventSummary, eventTone } from '../../composables/useTaskBoard'
 import { G } from '../../glyphs'
+import { formatExactStamp } from '../../relative-time'
 import type { TaskEventCtx } from '../../task-event-registry'
 import type { TaskEvent, TaskRecord } from '../../types'
 
@@ -21,15 +22,16 @@ const EVENT_DATA_TONE = {
 const dataTone = computed(() => EVENT_DATA_TONE[eventTone(props.event)])
 const summary = computed(() => eventSummary(props.event))
 const stamp = computed(() => clockTime(props.event.at))
+const exact = computed(() => formatExactStamp(props.event.at))
 </script>
 
 <template>
-  <div class="tev-line" :data-tone="dataTone">
+  <div class="tev-line" :data-tone="dataTone" :title="exact">
     <span class="tev-dot" aria-hidden="true">{{ G.dot }}</span>
     <span class="tev-text" :class="{ 'tev-text--error': event.type === 'error' }">{{
       summary
     }}</span>
-    <span class="tev-time">{{ stamp }}</span>
+    <span v-if="ctx.showTime && stamp" class="tev-time">{{ stamp }}</span>
   </div>
 </template>
 
@@ -55,8 +57,8 @@ const stamp = computed(() => clockTime(props.event.at))
   color: var(--err);
 }
 
+/* Right after the text, never a column of its own: the stamp is an aside. */
 .tev-time {
-  margin-left: auto;
   flex: none;
   font-size: 12px;
   color: var(--fg-muted);

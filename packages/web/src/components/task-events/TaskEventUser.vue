@@ -1,44 +1,51 @@
 <script setup lang="ts">
-// User prompt in the thread, componentised (fiche 12 section 2): an
-// accent-railed block, right-aligned, no avatar — the dissymmetry with the
-// assistant's plain text IS the point the fiche makes there.
+// User prompt in the thread, on the kit's own message grammar: a 4ch gutter
+// naming the speaker, then the text behind an accent rail. It sits on the
+// LEFT like everything else — the rail and the gutter carry the dissymmetry
+// with the agent, no alignment trick does.
 //
 // Rendered through the SAME markdown path as the assistant's own message
-// (see TaskEventMessage.vue): today this text renders as a raw <p>, so a
-// list or a code block the user typed shows up as a wall of text while the
-// assistant's own replies render properly formatted. renderMarkdown escapes
-// ALL input before transforming anything, so this is exactly as safe on
-// user-authored (adversarial) text as it is on the agent's own.
+// (see TaskEventMessage.vue): a list or a code block the user typed reads as
+// what it is. renderMarkdown escapes ALL input before transforming anything,
+// so this is exactly as safe on user-authored (adversarial) text as it is on
+// the agent's own.
 import { computed } from 'vue'
+import { t } from '../../i18n'
 import { renderMarkdown } from '../../markdown'
+import { formatExactStamp } from '../../relative-time'
 
-const props = defineProps<{ text: string }>()
+const props = defineProps<{ text: string; at?: string }>()
 
 const html = computed(() => renderMarkdown(props.text))
+const exact = computed(() => (props.at ? formatExactStamp(props.at) : undefined))
 </script>
 
 <template>
-  <div class="tvu-root">
+  <div class="tvu-root msg user" :title="exact">
+    <span class="tvu-who who you">{{ t('conversation.you') }}</span>
     <!-- eslint-disable-next-line vue/no-v-html — renderMarkdown escapes everything first -->
-    <div class="tvu-bubble tvu-md" v-html="html" />
+    <div class="tvu-bubble tvu-md body" v-html="html" />
   </div>
 </template>
 
 <style scoped>
 .tvu-root {
-  align-self: flex-end;
-  width: fit-content;
-  max-width: 72ch;
   min-width: 0;
 }
 
-.tvu-bubble {
+.tvu-who {
+  flex: none;
+}
+
+/* The kit's `.msg.user .body` draws the accent rail and its 1ch of padding;
+   only the markdown flow is scoped here. */
+.tvu-root .tvu-bubble {
   margin: 0;
-  padding-left: 1ch;
-  border-left: 2px solid var(--accent);
+  max-width: 72ch;
   color: var(--fg);
   overflow-wrap: anywhere;
   min-width: 0;
+  white-space: normal;
 }
 
 /* Rendered markdown: same quiet document rhythm as the assistant's own
@@ -78,10 +85,6 @@ const html = computed(() => renderMarkdown(props.text))
 }
 
 .tvu-md :deep(code) {
-  font-size: 12px;
-  color: var(--ok);
-  background: none;
-  padding: 0;
   white-space: pre-wrap;
 }
 
@@ -90,10 +93,6 @@ const html = computed(() => renderMarkdown(props.text))
   border-left: 2px solid var(--line);
   background: var(--bg-raised);
   overflow-x: auto;
-}
-
-.tvu-md :deep(pre code) {
-  color: var(--fg);
 }
 
 .tvu-md :deep(a) {

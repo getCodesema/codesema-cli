@@ -26,6 +26,10 @@ export type TaskEventCtx = {
   reviewAvailable: boolean
   /** Slow clock (epoch ms) owned by the conversation, for "il y a X" stamps. */
   now: number
+  /** The minute moved since the previous event: this one prints its stamp. */
+  showTime: boolean
+  /** 1-based turn the event belongs to; null before the first turn started. */
+  turnNumber: number | null
   /**
    * Untruncated body for message/question events: the journal persists a
    * bounded preview, the full text lives on the turn (turns[i].response /

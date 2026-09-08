@@ -18,10 +18,11 @@ import {
   type ChecksSetupState,
   type ChecksTone,
 } from '../../composables/useChecks'
-import { formatDuration, timeAgo } from '../../composables/useTaskBoard'
+import { formatDuration } from '../../composables/useTaskBoard'
 import type { ApiResult } from '../../composables/useTasks'
 import type { StatusTone } from '../../execution-status'
 import { t } from '../../i18n'
+import { formatRelativeAge } from '../../relative-time'
 import type { TaskChecks } from '../../types'
 
 const props = defineProps<{
@@ -70,7 +71,9 @@ const sourceText = computed(() => checksSourceLabel(props.checks))
 /** "il y a X" stamp of the verified head (finished, else started). */
 const stamp = computed(() => {
   const current = props.checks
-  return current === null ? null : timeAgo(current.finished_at ?? current.started_at, props.slowNow)
+  return current === null
+    ? null
+    : formatRelativeAge(current.finished_at ?? current.started_at, props.slowNow)
 })
 
 // ── Agent-assisted setup: propose a plan, apply it on an explicit click ────

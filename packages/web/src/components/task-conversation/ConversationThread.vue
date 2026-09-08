@@ -4,8 +4,9 @@
 // the review's own progress block, and the quick replies of an open question.
 import { computed, nextTick, ref, watch } from 'vue'
 import { formatTokens } from '../../composables/useTaskBoard'
-import { useConversationThread, type ThreadItem } from '../../composables/useTaskConversation'
-import type { TaskState } from '../../composables/useTasks'
+import { useConversationThread } from '../../composables/useTaskConversation'
+import type { ApiResult, TaskState } from '../../composables/useTasks'
+import { cleanupOffer, type ThreadItem } from '../../conversation-thread'
 import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import { TASK_EVENT_COMPONENTS } from '../../task-event-registry'
@@ -20,6 +21,8 @@ const props = defineProps<{
   runningElapsed: string | null
   quickReplies: string[]
   replyBusy: boolean
+  /** DELETE …/worktree: the one destructive offer, kept at the thread's tail. */
+  abandon: () => Promise<ApiResult>
 }>()
 
 const emit = defineEmits<{
@@ -27,14 +30,48 @@ const emit = defineEmits<{
   fix: []
   pick: [option: string]
   other: []
+  error: [message: string | null]
 }>()
 
 const state = computed(() => props.state)
 const record = computed(() => props.state.record)
-const { items, ctxFor, isLiveTools, toolsSummary } = useConversationThread(
+const { items, ctxFor, isLiveTools, toolsSummary, setupSummary } = useConversationThread(
   state,
   computed(() => props.slowNow),
 )
+
+// ── Danger zone: the destructive offer, at the very end of the thread ─────
+// Two clicks, and only two: arming is dropped by Escape, by leaving the
+// button, and by any status change under it.
+const cleanup = computed(() => cleanupOffer(record.value))
+const cleanupArmed = ref(false)
+const cleanupBusy = ref(false)
+
+watch(
+  () => record.value.status,
+  () => {
+    cleanupArmed.value = false
+  },
+)
+
+function disarmCleanup(): void {
+  cleanupArmed.value = false
+}
+
+async function doCleanup(): Promise<void> {
+  if (!cleanupArmed.value) {
+    cleanupArmed.value = true
+    return
+  }
+  cleanupArmed.value = false
+  cleanupBusy.value = true
+  emit('error', null)
+  const result = await props.abandon()
+  cleanupBusy.value = false
+  if (!result.ok) {
+    emit('error', result.error)
+  }
+}
 
 // The live area covers BOTH streams of the task_text channel. The agent's
 // turn is a CONVERSATION: each message it streams is its own bubble and they
@@ -57,7 +94,7 @@ function liveSummary(): string {
 }
 
 const itemKey = (item: ThreadItem): string =>
-  item.kind === 'tools' ? `tools-${item.key}` : `event-${item.event.seq}`
+  item.kind === 'single' ? `event-${item.event.seq}` : `${item.kind}-${item.key}`
 
 // ── Scroll: follow the tail politely ─────────────────────────────────────
 // New events and stream text keep the view glued to the bottom ONLY when the
@@ -91,16 +128,33 @@ watch(
   <div ref="cvScroll" class="cv-scroll thread">
     <template v-for="item in items" :key="itemKey(item)">
       <template v-if="item.kind === 'single'">
-        <TaskEventUser v-if="item.prompt !== null" :text="item.prompt" />
+        <TaskEventUser v-if="item.prompt !== null" :text="item.prompt" :at="item.event.at" />
         <component
           :is="TASK_EVENT_COMPONENTS[item.event.type]"
           :event="item.event"
           :task="record"
-          :ctx="ctxFor(item.event)"
+          :ctx="ctxFor(item.event, item.showTime)"
           @open-review="(archiveRef: string | null) => emit('open-review', archiveRef)"
           @fix="emit('fix')"
         />
       </template>
+      <!-- Everything the runner did before the conversation started: one
+           line, opened only by a reader who asks for it. -->
+      <details v-else-if="item.kind === 'setup'" class="cv-prep tools">
+        <summary class="cv-tools-summary">
+          <span class="cv-tools-label cv-tools-label--done">{{ setupSummary(item) }}</span>
+        </summary>
+        <div class="cv-tools-body">
+          <component
+            :is="TASK_EVENT_COMPONENTS[ev.type]"
+            v-for="ev in item.events"
+            :key="ev.seq"
+            :event="ev"
+            :task="record"
+            :ctx="ctxFor(ev, false)"
+          />
+        </div>
+      </details>
       <details v-else class="cv-tools tools" :class="{ 'cv-tools--live': isLiveTools(item) }">
         <summary class="cv-tools-summary">
           <template v-if="isLiveTools(item)">
@@ -118,7 +172,7 @@ watch(
             :key="ev.seq"
             :event="ev"
             :task="record"
-            :ctx="ctxFor(ev)"
+            :ctx="ctxFor(ev, false)"
           />
         </div>
       </details>
@@ -165,6 +219,24 @@ watch(
       @pick="(option: string) => emit('pick', option)"
       @other="emit('other')"
     />
+
+    <!-- The end of the thread is where an irreversible action belongs: far
+         from the header's primary offer, and armed before it fires. -->
+    <section v-if="cleanup.available" class="cv-danger live err">
+      <span class="cv-danger-label">{{ t('conversation.dangerZone') }}</span>
+      <button
+        class="cv-danger-btn btn danger"
+        :class="{ armed: cleanupArmed }"
+        type="button"
+        :disabled="cleanupBusy"
+        :title="t(cleanup.hintKey)"
+        @click="doCleanup"
+        @blur="disarmCleanup"
+        @keydown.esc="disarmCleanup"
+      >
+        {{ cleanupArmed ? t('workspace.cleanupConfirm') : t(cleanup.labelKey) }}
+      </button>
+    </section>
   </div>
 </template>
 
@@ -208,6 +280,18 @@ watch(
 /* The review runs even when it says nothing: the dot is the proof of life. */
 .cv-live-dot {
   margin-right: 1ch;
+}
+
+.cv-danger {
+  margin-top: var(--row);
+  align-items: center;
+}
+
+.cv-danger-label {
+  flex: 1;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--err);
 }
 
 .cv-tools--live {

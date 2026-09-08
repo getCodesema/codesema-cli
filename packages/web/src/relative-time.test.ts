@@ -8,6 +8,27 @@ function isoAt(offsetMs: number): string {
   return new Date(NOW - offsetMs).toISOString()
 }
 
+/** The two absolute shapes the function switches to, built the same way it
+ * builds them: the assertion pins the FORMAT, never the reader's timezone. */
+function weekdayStamp(iso: string): string {
+  return new Intl.DateTimeFormat(t('time.locale'), {
+    hour12: false,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(iso))
+}
+
+function dateStamp(iso: string): string {
+  return new Intl.DateTimeFormat(t('time.locale'), {
+    hour12: false,
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(iso))
+}
+
 describe('formatRelativeAge', () => {
   test('an instant timestamp reads as just now', () => {
     expect(formatRelativeAge(isoAt(0), NOW)).toBe(t('time.justNow'))
@@ -33,36 +54,30 @@ describe('formatRelativeAge', () => {
     expect(formatRelativeAge(isoAt(86_399_999), NOW)).toBe(t('time.hoursAgo', { n: 23 }))
   })
 
-  test('exactly one day crosses into the days bucket', () => {
-    expect(formatRelativeAge(isoAt(86_400_000), NOW)).toBe(t('time.daysAgo', { n: 1 }))
+  test('a day old leaves the relative buckets for a weekday and a clock time', () => {
+    const iso = isoAt(86_400_000)
+    expect(formatRelativeAge(iso, NOW)).toBe(weekdayStamp(iso))
   })
 
-  test('just under a week still reads in days', () => {
-    expect(formatRelativeAge(isoAt(604_799_999), NOW)).toBe(t('time.daysAgo', { n: 6 }))
+  test('just under a week still reads as a weekday', () => {
+    const iso = isoAt(604_799_999)
+    expect(formatRelativeAge(iso, NOW)).toBe(weekdayStamp(iso))
   })
 
-  test('exactly one week crosses into the weeks bucket', () => {
-    expect(formatRelativeAge(isoAt(604_800_000), NOW)).toBe(t('time.weeksAgo', { n: 1 }))
+  test('a week old switches to a numeric date', () => {
+    const iso = isoAt(604_800_000)
+    expect(formatRelativeAge(iso, NOW)).toBe(dateStamp(iso))
   })
 
-  test('just under a month still reads in weeks', () => {
-    expect(formatRelativeAge(isoAt(2_591_999_999), NOW)).toBe(t('time.weeksAgo', { n: 4 }))
+  test('a year old still reads as that same numeric date', () => {
+    const iso = isoAt(31_536_000_000)
+    expect(formatRelativeAge(iso, NOW)).toBe(dateStamp(iso))
   })
 
-  test('exactly one month crosses into the months bucket', () => {
-    expect(formatRelativeAge(isoAt(2_592_000_000), NOW)).toBe(t('time.monthsAgo', { n: 1 }))
-  })
-
-  test('just under a year still reads in months', () => {
-    expect(formatRelativeAge(isoAt(31_535_999_999), NOW)).toBe(t('time.monthsAgo', { n: 12 }))
-  })
-
-  test('exactly one year crosses into the years bucket', () => {
-    expect(formatRelativeAge(isoAt(31_536_000_000), NOW)).toBe(t('time.yearsAgo', { n: 1 }, 1))
-  })
-
-  test('several years still reads as a plain year count', () => {
-    expect(formatRelativeAge(isoAt(31_536_000_000 * 3), NOW)).toBe(t('time.yearsAgo', { n: 3 }, 3))
+  test('the two absolute formats never fall back to a relative sentence', () => {
+    const week = formatRelativeAge(isoAt(604_800_000), NOW)
+    expect(week).not.toContain(t('time.justNow'))
+    expect(week).toMatch(/\d{2}:\d{2}/)
   })
 
   test('a future timestamp never produces a negative age: it clamps to just now', () => {

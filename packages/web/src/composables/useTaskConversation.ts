@@ -3,6 +3,7 @@
 // DOM — focus and scrolling stay in the components, behind callbacks.
 
 import { computed, onUnmounted, ref, watch, type ComputedRef, type Ref } from 'vue'
+import { threadItemsOf, type ThreadItem } from '../conversation-thread'
 import { t } from '../i18n'
 import type { TaskEventCtx } from '../task-event-registry'
 import type { TaskEvent, TaskRecord, TaskTurn } from '../types'
@@ -10,7 +11,6 @@ import { extractQuickReplies } from './useQuickReplies'
 import {
   formatDuration,
   formatTokens,
-  groupThreadEvents,
   lastQuestion,
   replyModeOf,
   reviewRefOf,
@@ -80,15 +80,12 @@ function elapsedOf(record: Ref<TaskRecord>, nowTick: Ref<number>): ComputedRef<s
 // ── Thread: interleave each turn's user prompt with its journal events ────
 // The i-th turn_started event opens record.turns[i]; the prompt renders as a
 // user bubble right before it. Consecutive tool events fold into ONE block.
-export type ThreadItem =
-  | { kind: 'single'; event: TaskEvent; prompt: string | null }
-  | { kind: 'tools'; key: number; events: TaskEvent[]; turnIndex: number }
-
 export type ConversationThread = {
   items: ComputedRef<ThreadItem[]>
-  ctxFor: (event: TaskEvent) => TaskEventCtx
+  ctxFor: (event: TaskEvent, showTime: boolean) => TaskEventCtx
   isLiveTools: (item: Extract<ThreadItem, { kind: 'tools' }>) => boolean
   toolsSummary: (item: Extract<ThreadItem, { kind: 'tools' }>) => string
+  setupSummary: (item: Extract<ThreadItem, { kind: 'setup' }>) => string
 }
 
 export function useConversationThread(
@@ -96,25 +93,7 @@ export function useConversationThread(
   slowNow: Ref<number>,
 ): ConversationThread {
   const record = computed(() => state.value.record)
-  const items = computed<ThreadItem[]>(() => {
-    let turn = 0
-    return groupThreadEvents(state.value.events).map((block) => {
-      if (block.kind === 'tools') {
-        return {
-          kind: 'tools' as const,
-          key: block.events[0]?.seq ?? 0,
-          events: block.events,
-          turnIndex: block.turnIndex,
-        }
-      }
-      if (block.event.type === 'turn_started') {
-        const prompt = record.value.turns[turn]?.prompt ?? null
-        turn++
-        return { kind: 'single' as const, event: block.event, prompt }
-      }
-      return { kind: 'single' as const, event: block.event, prompt: null }
-    })
-  })
+  const items = computed<ThreadItem[]>(() => threadItemsOf(record.value, state.value.events))
   return {
     items,
     ctxFor: eventCtxFactory(state, slowNow),
@@ -123,6 +102,12 @@ export function useConversationThread(
       item.turnIndex === record.value.turns.length - 1 &&
       record.value.turns.at(-1)?.ended_at === null,
     toolsSummary: (item) => toolsSummaryText(record.value, item),
+    setupSummary: (item) =>
+      t(
+        'conversation.setupSummary',
+        { n: item.events.length, duration: item.duration },
+        item.events.length,
+      ),
   }
 }
 
@@ -174,15 +159,31 @@ function fullTextOf(event: TaskEvent, turn: TaskTurn | undefined): string | null
   return event.type === 'question' ? (turn?.question ?? null) : null
 }
 
+/** 1-based turn each event belongs to; null for what precedes the first turn. */
+function turnBySeqOf(state: Ref<TaskState>): ComputedRef<Map<number, number>> {
+  return computed(() => {
+    const map = new Map<number, number>()
+    let turn = 0
+    for (const event of state.value.events) {
+      if (event.type === 'turn_started') {
+        turn++
+      }
+      map.set(event.seq, turn)
+    }
+    return map
+  })
+}
+
 function eventCtxFactory(
   state: Ref<TaskState>,
   slowNow: Ref<number>,
-): (event: TaskEvent) => TaskEventCtx {
+): (event: TaskEvent, showTime: boolean) => TaskEventCtx {
   const fullTextBySeq = fullTextBySeqOf(state)
+  const turnBySeq = turnBySeqOf(state)
   const lastQuestionSeq = computed(
     () => state.value.events.findLast((event) => event.type === 'question')?.seq ?? null,
   )
-  return (event) => {
+  return (event, showTime) => {
     const record = state.value.record
     return {
       active:
@@ -195,6 +196,8 @@ function eventCtxFactory(
         event.type === 'review_done' &&
         (reviewRefOf(event.data) !== null || record.review_ref !== null),
       now: slowNow.value,
+      showTime,
+      turnNumber: turnBySeq.value.get(event.seq) || null,
       fullText: fullTextBySeq.value.get(event.seq) ?? null,
     }
   }

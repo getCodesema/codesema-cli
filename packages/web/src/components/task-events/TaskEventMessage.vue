@@ -3,9 +3,10 @@
 // il y a X") over plain text; `inline code` spans render mono.
 // This is what the agent SAID — body text, not a journal line.
 import { computed } from 'vue'
-import { eventSummary, firstString, timeAgo } from '../../composables/useTaskBoard'
+import { eventSummary, firstString } from '../../composables/useTaskBoard'
 import { t } from '../../i18n'
 import { renderMarkdown } from '../../markdown'
+import { formatExactStamp, formatRelativeAge } from '../../relative-time'
 import type { TaskEventCtx } from '../../task-event-registry'
 import type { TaskEvent, TaskRecord } from '../../types'
 
@@ -21,11 +22,12 @@ const text = computed(
 )
 // renderMarkdown escapes ALL input before transforming: safe for v-html.
 const html = computed(() => renderMarkdown(text.value))
-const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
+const ago = computed(() => formatRelativeAge(props.event.at, props.ctx.now))
+const exact = computed(() => formatExactStamp(props.event.at))
 </script>
 
 <template>
-  <div class="tvm-root">
+  <div class="tvm-root" :title="exact">
     <p class="tvm-meta">
       {{ t('workspace.agentLabel') }}<template v-if="ago"> · {{ ago }}</template>
     </p>
@@ -91,10 +93,6 @@ const ago = computed(() => timeAgo(props.event.at, props.ctx.now))
 }
 
 .tvm-md :deep(code) {
-  font-size: 12px;
-  color: var(--ok);
-  background: none;
-  padding: 0;
   white-space: pre-wrap;
 }
 

@@ -674,14 +674,13 @@ const en = {
   'workspace.forgeUnavailableHint':
     'Conversations still run: a task can be created from a title and a prompt, and a task already bound to a ticket carries on with the copy it froze. What is off: binding a new issue, posting a recap on a merge request, and merging.',
 
-  // --- Relative time (forge list cards) ---
+  // --- Relative time (forge list cards, conversation stamps) ---
+  // BCP 47 tag of this catalog: the date formats below a day old are built by
+  // Intl, not by a template string.
+  'time.locale': 'en',
   'time.justNow': 'just now',
   'time.minutesAgo': '{n} min ago',
   'time.hoursAgo': '{n}h ago',
-  'time.daysAgo': '{n}d ago',
-  'time.weeksAgo': '{n}w ago',
-  'time.monthsAgo': '{n}mo ago',
-  'time.yearsAgo': '{n}y ago',
 
   // --- Forge board (C3): two accordions, issues and pull requests ---
   'forge.issuesTitle': 'Issues',
@@ -780,7 +779,7 @@ const en = {
   'changes.fileList.diffLoadError': 'Could not load the diff',
 
   // --- Chat composer (autonomous input box: components/composer/ChatComposer.vue) ---
-  'composer.hintShortcuts': '(Ctrl/Cmd+Enter to send · Enter for a new line)',
+  'composer.hintSend': 'Ctrl+Enter to send',
   'composer.hintOffline': 'Offline, your message will send once reconnected',
   'composer.hintStopping': 'Stopping…',
   'composer.hintDictating': 'Listening…',
@@ -790,6 +789,13 @@ const en = {
   'composer.micAria': 'Dictation (coming soon)',
   'composer.improveAria': 'Improve text (coming soon)',
   'composer.sendAria': 'Send',
+
+  // --- Open conversation: thread stamps, folded setup, danger zone ---
+  'conversation.you': 'you',
+  'conversation.setupSummary':
+    'preparation · {n} step · {duration} | preparation · {n} steps · {duration}',
+  'conversation.checksLine': '{text} · turn {n}',
+  'conversation.dangerZone': 'Danger zone',
 
   // --- Conversations column: header, search, activity line, reference pills ---
   'conversations.title': 'Conversations',
@@ -1544,14 +1550,11 @@ const fr: Record<MessageKey, string> = {
   'workspace.forgeUnavailableHint':
     "Les conversations continuent : on peut créer une tâche à partir d'un titre et d'un prompt, et une tâche déjà rattachée à un ticket poursuit sur la copie qu'elle a figée. Ce qui est coupé : rattacher une nouvelle issue, poster un récap sur une merge request, et merger.",
 
-  // --- Temps relatif (cartes de la liste forge) ---
+  // --- Temps relatif (cartes de la liste forge, horodatage du fil) ---
+  'time.locale': 'fr',
   'time.justNow': "à l'instant",
   'time.minutesAgo': 'il y a {n} min',
   'time.hoursAgo': 'il y a {n} h',
-  'time.daysAgo': 'il y a {n} j',
-  'time.weeksAgo': 'il y a {n} sem',
-  'time.monthsAgo': 'il y a {n} mois',
-  'time.yearsAgo': 'il y a {n} an | il y a {n} ans',
 
   // --- Forge board (C3) : deux accordéons, issues et pull requests ---
   'forge.issuesTitle': 'Issues',
@@ -1649,7 +1652,7 @@ const fr: Record<MessageKey, string> = {
   'changes.fileList.diffLoadError': 'Impossible de charger le différentiel',
 
   // --- Zone de saisie (boîte autonome : components/composer/ChatComposer.vue) ---
-  'composer.hintShortcuts': '(Ctrl/Cmd+Entrée pour envoyer · Entrée pour une nouvelle ligne)',
+  'composer.hintSend': 'Ctrl+Entrée pour envoyer',
   'composer.hintOffline': 'Hors ligne, ton message partira à la reconnexion',
   'composer.hintStopping': 'Arrêt en cours…',
   'composer.hintDictating': 'Dictée en cours…',
@@ -1659,6 +1662,13 @@ const fr: Record<MessageKey, string> = {
   'composer.micAria': 'Dictée (bientôt disponible)',
   'composer.improveAria': 'Améliorer le texte (bientôt disponible)',
   'composer.sendAria': 'Envoyer',
+
+  // --- Conversation ouverte : horodatage, préparation repliée, zone de danger ---
+  'conversation.you': 'toi',
+  'conversation.setupSummary':
+    'préparation · {n} étape · {duration} | préparation · {n} étapes · {duration}',
+  'conversation.checksLine': '{text} · tour {n}',
+  'conversation.dangerZone': 'Zone de danger',
 
   // --- Colonne des conversations ---
   'conversations.title': 'Conversations',

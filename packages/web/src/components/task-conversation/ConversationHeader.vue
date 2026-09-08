@@ -1,9 +1,11 @@
 <script setup lang="ts">
-// The conversation's header: state glyph + title, the four offers (cleanup,
-// interrupt, resume, ship), the identity chips (project · branch, isolation,
-// status phrase, chronos), the blocker's own sentence, and the tab bar. The
-// state is carried by `data-tone`, never by an inline colour.
-import { computed, ref, watch } from 'vue'
+// The conversation's header: state glyph + short label, the prompt sentence
+// under it, the offers that move the task forward (interrupt, resume, ship),
+// the identity chips (project · branch, isolation, status phrase, chronos),
+// the blocker's own sentence, and the tab bar. Deleting the worktree is NOT
+// here: an irreversible action lives at the tail of the thread. The state is
+// carried by `data-tone`, never by an inline colour.
+import { computed, ref } from 'vue'
 import { isolationBadge } from '../../composables/useIsolation'
 import {
   formatDuration,
@@ -14,10 +16,11 @@ import {
   type FocusTabState,
 } from '../../composables/useTaskBoard'
 import type { ApiResult, TaskState } from '../../composables/useTasks'
+import { conversationLabel } from '../../conversation-label'
 import { EXECUTION_STATUS } from '../../execution-status'
 import { G } from '../../glyphs'
 import { t } from '../../i18n'
-import type { Project, TaskStatus } from '../../types'
+import type { Project } from '../../types'
 
 const props = defineProps<{
   state: TaskState
@@ -28,7 +31,6 @@ const props = defineProps<{
   interrupt: () => Promise<ApiResult>
   resume: () => Promise<ApiResult>
   ship: () => Promise<ApiResult>
-  abandon: () => Promise<ApiResult>
   tab: FocusTab
   tabs: FocusTabState[]
   diffTabLabel: string
@@ -40,6 +42,9 @@ const props = defineProps<{
 const emit = defineEmits<{ 'pick-tab': [tab: FocusTab]; error: [message: string | null] }>()
 
 const record = computed(() => props.state.record)
+// The branch slug the agent chose makes a shorter, truer name than the free
+// -form title, which stays right below in full.
+const label = computed(() => conversationLabel(record.value))
 const visual = computed(() => EXECUTION_STATUS[record.value.status])
 // A 'queued' task waiting for the MACHINE-wide cap gets its own phrase.
 const phraseKey = computed(() =>
@@ -65,37 +70,6 @@ async function run(action: () => Promise<ApiResult>): Promise<boolean> {
     emit('error', result.error)
   }
   return result.ok
-}
-
-// ── Cleanup: remove the worktree (and forked branch), two-step ────────────
-const CLEANABLE: ReadonlySet<TaskStatus> = new Set([
-  'queued',
-  'waiting_for_you',
-  'review_ok',
-  'review_ko',
-  'shipped',
-  'failed',
-  'interrupted',
-])
-const canCleanup = computed(() => CLEANABLE.has(record.value.status))
-const cleanupArmed = ref(false)
-const cleanupBusy = ref(false)
-watch(
-  () => record.value.status,
-  () => {
-    cleanupArmed.value = false
-  },
-)
-
-async function doCleanup(): Promise<void> {
-  if (!cleanupArmed.value) {
-    cleanupArmed.value = true
-    return
-  }
-  cleanupArmed.value = false
-  cleanupBusy.value = true
-  await run(props.abandon)
-  cleanupBusy.value = false
 }
 
 // 'reviewing' is deliberately ABSENT: the runner frees the slot before the
@@ -164,33 +138,21 @@ const wait = computed(() =>
       <div class="cv-title-row">
         <span v-if="visual.attention" class="cv-warn" aria-hidden="true">{{ G.attention }}</span>
         <span v-else class="cv-dot status" :data-tone="visual.tone" aria-hidden="true" />
-        <h1 class="cv-title">{{ record.title }}</h1>
+        <h1 class="cv-title">{{ label }}</h1>
       </div>
       <span class="cv-actions act">
         <button
-          v-if="canCleanup"
-          class="cv-btn cv-btn--ghost-danger btn ghost"
-          :class="{ 'cv-btn--armed': cleanupArmed, armed: cleanupArmed }"
-          :disabled="cleanupBusy"
-          :title="
-            record.work_on ? t('workspace.cleanupWorktreeHint') : t('workspace.cleanupBranchHint')
-          "
-          @click="doCleanup"
+          v-if="canInterrupt"
+          class="cv-btn cv-btn--interrupt btn ghost"
+          type="button"
+          @click="doInterrupt"
         >
-          {{
-            cleanupArmed
-              ? t('workspace.cleanupConfirm')
-              : record.work_on
-                ? t('workspace.cleanupWorktree')
-                : t('workspace.cleanupBranch')
-          }}
-        </button>
-        <button v-if="canInterrupt" class="cv-btn cv-btn--danger btn danger" @click="doInterrupt">
           {{ t('workspace.interrupt') }}
         </button>
         <button
           v-if="resumeState === 'ready'"
-          class="cv-btn cv-btn--resume btn"
+          class="cv-btn cv-btn--resume btn ghost"
+          type="button"
           :disabled="resumeBusy"
           :title="t('workspace.resumeHint')"
           @click="doResume"
@@ -199,12 +161,16 @@ const wait = computed(() =>
         </button>
         <button
           v-if="record.status === 'review_ok'"
-          class="cv-btn cv-btn--ship btn"
+          class="cv-btn cv-btn--ship btn primary"
+          type="button"
           @click="doShip"
         >
           {{ t('workspace.ship') }}
         </button>
       </span>
+
+      <!-- The label above is a name; this is the sentence that was asked. -->
+      <p class="cv-full-title">{{ record.title }}</p>
 
       <div class="cv-sub chips">
         <template v-if="projectKind === 'scratch'">
@@ -356,18 +322,19 @@ const wait = computed(() =>
 
 .cv-btn--resume {
   color: var(--warn);
-  border-color: var(--warn);
 }
 
-.cv-btn--ship {
-  color: var(--ok);
-  border-color: var(--ok);
-  font-weight: 700;
-}
-
-.cv-btn--ghost-danger:hover:not(:disabled) {
+/* Stopping a turn is not destructive: it stays a quiet offer until hovered. */
+.cv-btn--interrupt:hover:not(:disabled) {
   border-color: var(--err);
   color: var(--err);
+}
+
+.cv-full-title {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
 }
 
 .cv-sub {

@@ -73,16 +73,19 @@ describe('ChatComposer: structure', () => {
 
   test('renders the send button, the attach button, and the two inert placeholder tools', async () => {
     const html = await render(BASE)
-    expect(html).toContain('class="cc-send"')
+    expect(html).toContain('class="cc-send btn primary"')
     expect(html).toContain('cc-tool--attach')
     expect(html).toContain('cc-tool--placeholder')
   })
 })
 
 describe('ChatComposer: placeholder is a state display (fiche section 2)', () => {
-  test("default: the caller's message, then the shortcuts in parens", async () => {
+  // The shortcut left the placeholder for a hint line of its own under the
+  // field: the placeholder now says the caller's message and nothing else.
+  test("default: the caller's message alone", async () => {
     const html = await render({ ...BASE, placeholder: 'Answer the agent…' })
-    expect(html).toContain(`placeholder="Answer the agent… ${t('composer.hintShortcuts')}"`)
+    expect(html).toContain('placeholder="Answer the agent…"')
+    expect(html).toContain(t('composer.hintSend'))
   })
 
   test('offline replaces the placeholder entirely', async () => {
@@ -150,30 +153,32 @@ describe('ChatComposer: mode carries the filet color (fiche section 1)', () => {
   })
 })
 
-describe('ChatComposer: the round send button (fiche section 3)', () => {
+describe('ChatComposer: the labelled send button (fiche section 3)', () => {
   test('disabled with empty text', async () => {
     const html = await render({ ...BASE, modelValue: '' })
-    expect(openingTag(html, 'class="cc-send"')).toContain('disabled')
+    expect(openingTag(html, 'class="cc-send btn primary"')).toContain('disabled')
   })
 
   test('disabled with whitespace-only text', async () => {
     const html = await render({ ...BASE, modelValue: '   ' })
-    expect(openingTag(html, 'class="cc-send"')).toContain('disabled')
+    expect(openingTag(html, 'class="cc-send btn primary"')).toContain('disabled')
   })
 
   test('enabled with real text and nothing in flight', async () => {
     const html = await render({ ...BASE, modelValue: 'ship it' })
-    expect(openingTag(html, 'class="cc-send"')).not.toContain('disabled')
+    expect(openingTag(html, 'class="cc-send btn primary"')).not.toContain('disabled')
   })
 
   test('disabled while a send is already in flight, even with text', async () => {
     const html = await render({ ...BASE, modelValue: 'ship it', sending: true })
-    expect(openingTag(html, 'class="cc-send"')).toContain('disabled')
+    expect(openingTag(html, 'class="cc-send btn primary"')).toContain('disabled')
   })
 
   test('carries the send aria-label', async () => {
     const html = await render(BASE)
-    expect(openingTag(html, 'class="cc-send"')).toContain(`aria-label="${t('composer.sendAria')}"`)
+    expect(openingTag(html, 'class="cc-send btn primary"')).toContain(
+      `aria-label="${t('composer.sendAria')}"`,
+    )
   })
 })
 

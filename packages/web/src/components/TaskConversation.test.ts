@@ -26,6 +26,7 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import { t } from '../i18n'
+import { formatExactStamp } from '../relative-time'
 import type { TaskChecks, TaskEvent, TaskRecord, TaskTurn } from '../types'
 
 Bun.plugin({
@@ -354,5 +355,127 @@ describe('TaskConversation wires the extracted QuickReplies component', () => {
     })
     expect(html).not.toContain('→ v2')
     expect(html).not.toContain(t('workspace.quickReplyOther'))
+  })
+})
+
+// ── The open conversation, after Hasan's UX pass ─────────────────────────
+// Header naming, folded setup, one checks verdict per turn, minute-gated
+// stamps and the danger zone: five decisions no other test would notice
+// losing, since each one is a template detail the composables cannot see.
+
+const messageEvent: TaskEvent = {
+  seq: 9,
+  at: '2026-08-24T10:05:00.000Z',
+  type: 'message',
+  data: { text: 'done' },
+}
+
+describe('the header names the conversation, then quotes what was asked', () => {
+  test('the 18px title is the branch slug, the prompt sentence sits under it', async () => {
+    const html = await renderConversation({
+      record: { branch: 'codesema/task-rename-package', title: 'Rename nolyra to codesema' },
+    })
+    expect(html).toContain('rename package')
+    expect(html).toContain('Rename nolyra to codesema')
+  })
+})
+
+describe('the runner notices before the conversation fold into one line', () => {
+  const setupEvents: TaskEvent[] = [
+    { seq: 1, at: '2026-08-24T10:00:00.000Z', type: 'isolation', data: { name: 'container' } },
+    { seq: 2, at: '2026-08-24T10:00:04.000Z', type: 'prep', data: { name: 'install_started' } },
+    { seq: 3, at: '2026-08-24T10:00:12.000Z', type: 'prep', data: { name: 'install_passed' } },
+  ]
+
+  test('three setup events become one foldable summary, counted and timed', async () => {
+    const html = await renderConversation({ events: [...setupEvents, messageEvent] })
+    expect(html).toContain('cv-prep')
+    expect(html).toContain(
+      t('conversation.setupSummary', { n: 3, duration: t('workspace.durSeconds', { n: 12 }) }, 3),
+    )
+  })
+
+  test('a lone setup notice stays a plain line rather than a fold of one', async () => {
+    const html = await renderConversation({ events: [setupEvents[0] as TaskEvent, messageEvent] })
+    expect(html).not.toContain('cv-prep')
+  })
+})
+
+describe('the thread keeps one checks verdict per turn', () => {
+  const checksEvent = (seq: number, passed: number): TaskEvent => ({
+    seq,
+    at: '2026-08-24T10:02:00.000Z',
+    type: 'checks',
+    data: { status: 'passed', passed, failed: 0 },
+  })
+
+  test('an earlier run of the same turn gives way to the latest one', async () => {
+    const html = await renderConversation({
+      record: { turns: [turn('go')] },
+      events: [turnStarted, checksEvent(2, 1), checksEvent(3, 3)],
+    })
+    expect(html).toContain(t('workspace.checksEvPassed', { n: 3 }, 3))
+    expect(html).not.toContain(t('workspace.checksEvPassed', { n: 1 }, 1))
+  })
+
+  test('the surviving verdict names the turn it verified', async () => {
+    const html = await renderConversation({
+      record: { turns: [turn('go')] },
+      events: [turnStarted, checksEvent(2, 3)],
+    })
+    expect(html).toContain(
+      t('conversation.checksLine', { text: t('workspace.checksEvPassed', { n: 3 }, 3), n: 1 }),
+    )
+  })
+})
+
+describe('a stamp is printed only when the minute moves', () => {
+  const commitAt = (seq: number, at: string): TaskEvent => ({
+    seq,
+    at,
+    type: 'commit',
+    data: { sha: 'abc', files_changed: 1, turn: 1 },
+  })
+
+  test('three events over two minutes print two stamps, not three', async () => {
+    const html = await renderConversation({
+      events: [
+        commitAt(1, '2026-08-24T10:00:00.000Z'),
+        commitAt(2, '2026-08-24T10:00:30.000Z'),
+        commitAt(3, '2026-08-24T10:01:00.000Z'),
+      ],
+    })
+    expect([...html.matchAll(/class="tev-time"/g)]).toHaveLength(2)
+  })
+
+  test('every line carries the full date and time in its title', async () => {
+    const html = await renderConversation({ events: [commitAt(1, '2026-08-24T10:00:00.000Z')] })
+    expect(html).toContain(`title="${formatExactStamp('2026-08-24T10:00:00.000Z')}"`)
+  })
+})
+
+describe('deleting the branch left the header for the tail of the thread', () => {
+  test('the danger zone offers the cleanup where nothing else is clicked', async () => {
+    const html = await renderConversation({ record: { status: 'failed' } })
+    expect(html).toContain(t('conversation.dangerZone'))
+    expect(html).toContain(t('workspace.cleanupBranch'))
+    // The header keeps its own offers; the destructive one is not among them.
+    const header = html.slice(0, html.indexOf('cv-scroll'))
+    expect(header).not.toContain(t('workspace.cleanupBranch'))
+  })
+
+  test('a task in flight is offered no cleanup at all', async () => {
+    const html = await renderConversation({ record: { status: 'running' } })
+    expect(html).not.toContain(t('conversation.dangerZone'))
+  })
+})
+
+describe('the composer carries its send inside the field', () => {
+  test('the send button sits in the field box and the shortcut has its own line', async () => {
+    const html = await renderConversation({ record: { status: 'waiting_for_you' } })
+    const field = html.slice(html.indexOf('cv-reply-field'), html.indexOf('cv-reply-hint'))
+    expect(field).toContain('cv-reply-send btn primary')
+    expect(field).toContain(t('workspace.replySend'))
+    expect(html).toContain(t('composer.hintSend'))
   })
 })

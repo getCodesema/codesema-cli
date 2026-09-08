@@ -8,6 +8,7 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import { t } from '../../i18n'
+import { formatRelativeAge } from '../../relative-time'
 import type { ForgeIssue, ForgeMr } from '../../types'
 import type { ForgeDetailItem } from './ForgeLogic'
 import { MAX_FORGE_MARKDOWN_LENGTH } from './ForgeMarkdown'
@@ -456,15 +457,16 @@ describe('the metadata rail', () => {
     })
 
     test('dates: both opened and updated always render, createdAt/updatedAt are never null', async () => {
+      const createdAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
       const html = await render({
         kind: 'issue',
         issue: issue({
-          createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+          createdAt,
           updatedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
         }),
       })
       expect(html).toContain(t('mrs.rail.dates'))
-      expect(html).toContain(t('mrs.rail.openedAt', { age: t('time.daysAgo', { n: 2 }) }))
+      expect(html).toContain(t('mrs.rail.openedAt', { age: formatRelativeAge(createdAt) }))
       expect(html).toContain(t('mrs.rail.updatedAt', { age: t('time.hoursAgo', { n: 1 }) }))
     })
 

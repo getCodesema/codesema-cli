@@ -106,7 +106,7 @@ describe('TaskEventUser geometry follows the kit, not a bubble of its own', () =
   const style = source.slice(source.indexOf('<style'))
 
   const bubbleRule = () => {
-    const start = style.indexOf('.tvu-bubble {')
+    const start = style.indexOf('.tvu-root .tvu-bubble {')
     return style.slice(start, style.indexOf('}', start))
   }
 
@@ -120,17 +120,23 @@ describe('TaskEventUser geometry follows the kit, not a bubble of its own', () =
     expect(style).not.toContain('border-radius')
   })
 
-  test('the accent edge is what marks the user side, not a filled bubble', () => {
-    expect(style).toContain('border-left: 2px solid var(--accent);')
+  // The rail and its 1ch of padding now come from the kit's own `.msg.user
+  // .body`, so the guard moved from the scoped CSS to the classes that pull
+  // it in: losing them loses the accent edge just the same.
+  test('the accent edge comes from the kit message grammar, not a filled bubble', () => {
+    const template = source.slice(source.indexOf('<template>'), source.indexOf('</template>'))
+    expect(template).toContain('class="tvu-root msg user"')
+    expect(template).toContain('class="tvu-bubble tvu-md body"')
   })
 
-  test('padding on the kit grid: one character between the rail and the text', () => {
-    expect(style).toContain('padding-left: 1ch;')
+  test('the speaker sits in the kit gutter, named in words', () => {
+    const template = source.slice(source.indexOf('<template>'), source.indexOf('</template>'))
+    expect(template).toContain('class="tvu-who who you"')
+    expect(template).toContain("t('conversation.you')")
   })
 
-  test('width capped in characters, fitted to content', () => {
+  test('width capped in characters', () => {
     expect(style).toContain('max-width: 72ch;')
-    expect(style).toContain('width: fit-content;')
   })
 
   test('the bubble pins neither a size nor a line height: both inherit the kit', () => {
@@ -145,10 +151,17 @@ describe('TaskEventUser geometry follows the kit, not a bubble of its own', () =
     expect(style).not.toContain('rgba(')
   })
 
-  test('right-aligned, and no avatar element anywhere in the template', () => {
-    expect(style).toContain('align-self: flex-end;')
+  test('never right-aligned, and no avatar element anywhere in the template', () => {
+    expect(style).not.toContain('align-self: flex-end;')
+    expect(style).not.toContain('text-align: right;')
     const template = source.slice(source.indexOf('<template>'), source.indexOf('</template>'))
     expect(template).not.toMatch(/avatar/i)
     expect(template).not.toContain('<img')
+  })
+
+  // Green is the success colour of this UI; an inline `code` span is not a
+  // success. base.css already gives it --fg on --bg-raised.
+  test('inline code is never coloured by this component', () => {
+    expect(style).not.toContain('var(--ok)')
   })
 })

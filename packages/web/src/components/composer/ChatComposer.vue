@@ -14,8 +14,9 @@
 // All the height math is pure (ComposerLogic.ts): this component only
 // measures the DOM (scrollHeight, pointer/keyboard deltas) and feeds those
 // numbers through it, exactly like ForgeSplitter.vue does for panel widths.
-import { ArrowUp, Mic, Plus, Sparkles } from '@lucide/vue'
+import { Mic, Plus, Sparkles } from '@lucide/vue'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import {
   composerHeight,
@@ -243,7 +244,7 @@ const hintText = computed(() => {
     dictating: props.dictating,
     transcribing: props.transcribing,
   })
-  return state === null ? `${props.placeholder} ${t('composer.hintShortcuts')}` : t(HINT_KEY[state])
+  return state === null ? props.placeholder : t(HINT_KEY[state])
 })
 
 onMounted(() => {
@@ -328,16 +329,18 @@ defineExpose({ focus })
       <div class="cc-toolbar-end">
         <button
           type="button"
-          class="cc-send"
+          class="cc-send btn primary"
           :disabled="isSendDisabled"
           :aria-label="t('composer.sendAria')"
           :title="t('composer.sendAria')"
           @click="trySend"
         >
-          <ArrowUp class="cc-send-icon" aria-hidden="true" />
+          <span aria-hidden="true">{{ G.reply }}</span> {{ t('composer.sendAria') }}
         </button>
       </div>
     </div>
+
+    <p class="cc-hint hint">{{ t('composer.hintSend') }}</p>
   </div>
 </template>
 
@@ -466,33 +469,14 @@ defineExpose({ focus })
   transform: rotate(45deg);
 }
 
-/* -- Send: the composer's one primary action ---------------------------- */
+/* -- Send: the composer's one primary action, inside the field box ------ */
 .cc-send {
   flex: none;
-  width: calc(var(--row) + 4px);
-  height: calc(var(--row) + 4px);
-  border: 1px solid var(--accent);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--accent);
-  color: var(--bg);
-  cursor: pointer;
-  transition: background 150ms ease;
 }
 
-.cc-send:hover:not(:disabled) {
-  background: var(--fg);
-  border-color: var(--fg);
-}
-
-.cc-send:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.cc-send-icon {
-  width: 1em;
-  height: 1em;
+/* -- Shortcut line, under the field ------------------------------------- */
+.cc-hint {
+  margin: 0;
+  padding: 0 1ch calc(var(--row) / 2);
 }
 </style>
