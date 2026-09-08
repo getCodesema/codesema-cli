@@ -1,21 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { TaskState } from '../../composables/useTasks'
 import type { TaskEvent, TaskRecord, TaskStatus } from '../../types'
-import {
-  anchorThreadBlocks,
-  closeLens,
-  hiddenStates,
-  LANE_MAX,
-  laneTemplate,
-  mobilePane,
-  onEscape,
-  openLens,
-  orderCards,
-  pruneClosed,
-  toggleExpanded,
-  visibleLanes,
-  type LensState,
-} from './PilotLogic'
+import { anchorThreadBlocks, orderCards } from './PilotLogic'
 
 function record(partial: Partial<TaskRecord> & { id: string }): TaskRecord {
   return {
@@ -49,166 +35,6 @@ function state(partial: Partial<TaskRecord> & { id: string }): TaskState {
     checks: null,
   }
 }
-
-describe('visibleLanes', () => {
-  test('truncates to LANE_MAX (4), keeping orderCards order', () => {
-    const states = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) =>
-      state({
-        id,
-        status: 'shipped',
-        updated_at: `2026-08-20T${10 + 'abcdef'.indexOf(id)}:00:00.000Z`,
-      }),
-    )
-    const visible = visibleLanes(states, [])
-    expect(visible).toHaveLength(LANE_MAX)
-    expect(visible.map((s) => s.record.id)).toEqual(
-      orderCards(states)
-        .slice(0, LANE_MAX)
-        .map((s) => s.record.id),
-    )
-  })
-
-  test('a closed id is excluded even when it would otherwise be in the top 4', () => {
-    const states = ['a', 'b', 'c'].map((id) => state({ id, status: 'running' }))
-    expect(visibleLanes(states, ['a']).map((s) => s.record.id)).toEqual(['b', 'c'])
-  })
-
-  test('closing a card from the top 4 frees a slot for the one just beyond it', () => {
-    const states = ['a', 'b', 'c', 'd', 'e'].map((id) =>
-      state({
-        id,
-        status: 'shipped',
-        updated_at: `2026-08-20T${10 + 'abcde'.indexOf(id)}:00:00.000Z`,
-      }),
-    )
-    expect(visibleLanes(states, ['e']).map((s) => s.record.id)).toEqual(['d', 'c', 'b', 'a'])
-  })
-
-  test('fewer than 4 cards all stay visible', () => {
-    const states = ['a', 'b'].map((id) => state({ id, status: 'running' }))
-    expect(visibleLanes(states, []).map((s) => s.record.id)).toHaveLength(2)
-  })
-
-  test('an empty list stays empty', () => {
-    expect(visibleLanes([], [])).toEqual([])
-  })
-})
-
-describe('hiddenStates', () => {
-  test('empty when everything fits within the visible lanes', () => {
-    const states = ['a', 'b', 'c'].map((id) => state({ id, status: 'running' }))
-    expect(hiddenStates(states, [])).toEqual([])
-  })
-
-  test('a card beyond the top 4 is hidden even though it is not closed', () => {
-    const states = ['a', 'b', 'c', 'd', 'e'].map((id) =>
-      state({
-        id,
-        status: 'shipped',
-        updated_at: `2026-08-20T${10 + 'abcde'.indexOf(id)}:00:00.000Z`,
-      }),
-    )
-    expect(hiddenStates(states, []).map((s) => s.record.id)).toEqual(['a'])
-  })
-
-  test('a closed card among the first 4 is hidden too', () => {
-    const states = ['a', 'b', 'c'].map((id) => state({ id, status: 'running' }))
-    expect(hiddenStates(states, ['b']).map((s) => s.record.id)).toEqual(['b'])
-  })
-
-  test('closed and beyond-4 cards are both reported, in orderCards order', () => {
-    const states = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) =>
-      state({
-        id,
-        status: 'shipped',
-        updated_at: `2026-08-20T${10 + 'abcdef'.indexOf(id)}:00:00.000Z`,
-      }),
-    )
-    expect(hiddenStates(states, ['b']).map((s) => s.record.id)).toEqual(['b', 'a'])
-  })
-})
-
-describe('laneTemplate', () => {
-  test('every visible lane gets an equal 1fr track when none is expanded', () => {
-    expect(laneTemplate(['a', 'b', 'c', 'd'], null)).toBe(
-      'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr)',
-    )
-  })
-
-  test('the expanded lane gets a 2fr track, the rest stay at 1fr', () => {
-    expect(laneTemplate(['a', 'b', 'c'], 'b')).toBe('minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr)')
-  })
-
-  test('an expanded id that is not among the visible lanes has no effect', () => {
-    expect(laneTemplate(['a', 'b'], 'z')).toBe('minmax(0, 1fr) minmax(0, 1fr)')
-  })
-
-  test('no visible lanes produces an empty template', () => {
-    expect(laneTemplate([], 'a')).toBe('')
-  })
-})
-
-describe('toggleExpanded', () => {
-  test('expanding a lane from none sets it', () => {
-    expect(toggleExpanded(null, 'a')).toBe('a')
-  })
-
-  test('clicking the already-expanded lane collapses it back to none', () => {
-    expect(toggleExpanded('a', 'a')).toBeNull()
-  })
-
-  test('clicking a different lane replaces the expanded one', () => {
-    expect(toggleExpanded('a', 'b')).toBe('b')
-  })
-})
-
-describe('pruneClosed', () => {
-  test('an id that no longer exists is dropped', () => {
-    expect(pruneClosed(['a', 'b'], ['a'])).toEqual(['a'])
-  })
-
-  test('ids that still exist are kept, in their original order', () => {
-    expect(pruneClosed(['a', 'b'], ['b', 'a'])).toEqual(['a', 'b'])
-  })
-
-  test('an empty closed list stays empty', () => {
-    expect(pruneClosed([], ['a'])).toEqual([])
-  })
-
-  test('nothing existing anymore empties the list', () => {
-    expect(pruneClosed(['a', 'b'], [])).toEqual([])
-  })
-})
-
-describe('lens (openLens / closeLens / onEscape)', () => {
-  test('opening from a closed lens sets the target', () => {
-    expect(openLens(null, 't1', 'evidence')).toEqual({ taskId: 't1', block: 'evidence' })
-  })
-
-  test('opening a different target while one is open replaces it', () => {
-    const current: LensState = { taskId: 't1', block: 'evidence' }
-    expect(openLens(current, 't1', 'checks')).toEqual({ taskId: 't1', block: 'checks' })
-    expect(openLens(current, 't2', 'evidence')).toEqual({ taskId: 't2', block: 'evidence' })
-  })
-
-  test('opening the exact same target again toggles it closed', () => {
-    const current: LensState = { taskId: 't1', block: 'evidence' }
-    expect(openLens(current, 't1', 'evidence')).toBeNull()
-  })
-
-  test('closeLens always returns null, regardless of the current state', () => {
-    expect(closeLens()).toBeNull()
-  })
-
-  test('onEscape closes an open lens', () => {
-    const current: LensState = { taskId: 't1', block: 'recap' }
-    expect(onEscape(current)).toBeNull()
-  })
-
-  test('onEscape on an already-closed lens stays null', () => {
-    expect(onEscape(null)).toBeNull()
-  })
-})
 
 describe('orderCards', () => {
   test('statuses that require the human come before the rest', () => {
@@ -282,16 +108,6 @@ describe('orderCards', () => {
     expect(new Set(ordered.map((s) => s.record.id))).toEqual(
       new Set(states.map((s) => s.record.id)),
     )
-  })
-})
-
-describe('mobilePane', () => {
-  test('no selection shows the list', () => {
-    expect(mobilePane(null)).toBe('list')
-  })
-
-  test('a selected task shows the thread', () => {
-    expect(mobilePane('t1')).toBe('thread')
   })
 })
 

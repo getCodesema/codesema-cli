@@ -1,6 +1,5 @@
-// Persisted layout preferences of the pilot workspace: which lane cards the
-// reader closed and which shell (pilot vs. classic) they last picked.
-// One JSON blob in localStorage, same doctrine as useRailPrefs.ts: a pure
+// Persisted layout preferences of the pilot workspace: which shell (pilot
+// vs. classic) the reader last picked. One JSON blob in localStorage, same doctrine as useRailPrefs.ts: a pure
 // parse function tested on its own, tolerant of an absent, empty, partial or
 // corrupted blob, plus a thin try/catch wrapper around the real localStorage
 // for the impure edges. The `use*()` factory itself (reactive refs, one per
@@ -11,12 +10,10 @@ import { computed, ref, watch, type Ref } from 'vue'
 export type PilotShell = 'pilot' | 'classic'
 
 export type PilotPrefs = {
-  closed: string[]
   shell: PilotShell
 }
 
 export const DEFAULT_PILOT_PREFS: PilotPrefs = {
-  closed: [],
   shell: 'pilot',
 }
 
@@ -26,10 +23,6 @@ const SHELLS: readonly PilotShell[] = ['pilot', 'classic']
 
 function isShell(value: unknown): value is PilotShell {
   return typeof value === 'string' && (SHELLS as readonly string[]).includes(value)
-}
-
-function isClosedList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string' && item.length > 0)
 }
 
 /**
@@ -45,7 +38,6 @@ export function parsePilotPrefs(raw: unknown): PilotPrefs {
   }
   const p = raw as Partial<PilotPrefs>
   return {
-    closed: isClosedList(p.closed) ? p.closed : DEFAULT_PILOT_PREFS.closed,
     shell: isShell(p.shell) ? p.shell : DEFAULT_PILOT_PREFS.shell,
   }
 }
@@ -86,7 +78,6 @@ export function writePilotPrefs(prefs: PilotPrefs): void {
 export type PilotPrefsStore = {
   /** The whole blob, for callers that want it as one value. */
   prefs: Ref<PilotPrefs>
-  closed: Ref<string[]>
   shell: Ref<PilotShell>
 }
 
@@ -106,7 +97,6 @@ export function usePilotPrefs(): PilotPrefsStore {
 
   return {
     prefs,
-    closed: field('closed'),
     shell: field('shell'),
   }
 }

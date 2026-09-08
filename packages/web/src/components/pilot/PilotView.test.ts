@@ -1,4 +1,4 @@
-// SSR string-render tests, same harness as AgentCard.test.ts / Lens.test.ts.
+// SSR string-render tests, same harness as PilotThread.test.ts.
 //
 // PilotView's setup calls `useTasks(props.token)` directly (same shape as
 // WorkspaceView.vue, see WorkspaceView.test.ts's own doctrine comment): the
@@ -7,12 +7,12 @@
 // render of this component can only ever observe the store in its EMPTY,
 // pre-mount state: there is no way to inject fixture TaskStates into it from
 // outside (no prop bag, no exposed setter, no module-level singleton to
-// reach into). What a genuine render DOES prove — the root class, the
-// default-prefs column count, the empty-grid message, the counters at
-// zero — is checked below via `renderToString`. Everything that depends on
-// a populated store (one AgentCard per task, the needsYou badge past zero,
-// the hydration guard, the reply wiring) is pinned on the SOURCE instead,
-// same doctrine as WorkspaceView.test.ts.
+// reach into). What a genuine render DOES prove — the root class, the list
+// column, the empty centre, the counters at zero — is checked below via
+// `renderToString`. Everything that depends on a populated store (the open
+// conversation, the needsYou badge past zero, the hydration guard, the reply
+// wiring) is pinned on the SOURCE instead, same doctrine as
+// WorkspaceView.test.ts.
 import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'bun:test'
 import { createSSRApp, h } from 'vue'
@@ -46,17 +46,20 @@ describe('PilotView: pre-mount SSR render (empty store)', () => {
     expect(html).toContain('class="ws-root pv-root"')
   })
 
-  test('no column selector renders (fixed lanes replaced it)', async () => {
+  test('the single column is a conversations list plus one centred stage', async () => {
     const html = await render()
-    expect(html).not.toContain('pv-cols')
-    expect(html).not.toContain(t('pilot.cols.aria'))
+    expect(html).toContain('cvl-root')
+    expect(html).toContain('pv-stage')
+    expect(html).not.toContain('pv-grid')
+    expect(html).not.toContain('pv-lane')
+    expect(html).not.toContain('pv-hidden-bar')
   })
 
-  test('an empty store renders the dignified empty state, not a blank grid', async () => {
+  test('an empty store renders the dignified empty state, not a blank stage', async () => {
     const html = await render()
     expect(html).toContain('pv-empty')
     expect(html).toContain(t('pilot.grid.empty'))
-    expect(html).not.toContain('ac-root')
+    expect(html).not.toContain('pt-root')
   })
 
   test('the conversation count renders at zero; the needsYou and working badges stay hidden at zero', async () => {
@@ -72,26 +75,16 @@ describe('PilotView: pre-mount SSR render (empty store)', () => {
     expect(html).toContain(t('pilot.toggle.classic'))
   })
 
-  test('no lens or full-screen overlay renders with nothing selected', async () => {
+  test('nothing selected: the body says so, for the narrow layout to read', async () => {
+    const html = await render()
+    expect(html).toContain('data-selected="false"')
+  })
+
+  test('no lens, no mobile list, no agent card survives the single-column shell', async () => {
     const html = await render()
     expect(html).not.toContain('pl-lens')
-  })
-
-  test('the mobile pane renders the (empty) list, since nothing is selected', async () => {
-    const html = await render()
-    expect(html).toContain('pv-mobile')
-    expect(html).toContain('mbl-root')
-    expect(html).not.toContain('mbt-root')
-  })
-
-  test('the hidden-lanes bar is absent when nothing is closed or beyond the top 4', async () => {
-    const html = await render()
-    expect(html).not.toContain('pv-hidden-bar')
-  })
-
-  test('no lane wrapper renders with an empty store', async () => {
-    const html = await render()
-    expect(html).not.toContain('pv-lane-bar')
+    expect(html).not.toContain('mbl-root')
+    expect(html).not.toContain('ac-root')
   })
 })
 
@@ -102,23 +95,35 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
     expect(SOURCE).toContain('onUnmounted(tasks.stop)')
   })
 
-  test('cards are ordered with orderCards, never a raw store iteration', () => {
+  test('the list is fed orderCards, never a raw store iteration', () => {
     expect(SOURCE).toContain('orderCards(tasks.states.value)')
-    expect(SOURCE).toContain('v-for="state in visibleLaneStates"')
+    expect(SOURCE).toContain(':states="orderedStates"')
   })
 
-  test('every card gets the seven events wired: open-full, open-lens, send, pick, ship, stop, resume', () => {
-    const cardBlock = SOURCE.slice(
-      SOURCE.indexOf('<AgentCard'),
-      SOURCE.indexOf('/>', SOURCE.indexOf('<AgentCard')),
+  test('the list gets its project names and its selected row from this view', () => {
+    expect(SOURCE).toContain(':project-names="projectNameById"')
+    expect(SOURCE).toContain(':focused-keys="focusedKeys"')
+    expect(SOURCE).toContain(
+      'taskKey(selectedState.value.projectId, selectedState.value.record.id)',
     )
-    expect(cardBlock).toContain('@open-full="onOpenFull(state)"')
-    expect(cardBlock).toContain('@open-lens="onOpenLens(state.record.id, $event)"')
-    expect(cardBlock).toContain('sendReply(state.projectId, state.record.id, text)')
-    expect(cardBlock).toContain('sendReply(state.projectId, state.record.id, option)')
-    expect(cardBlock).toContain('@ship="doShip(state.projectId, state.record.id)"')
-    expect(cardBlock).toContain('@stop="doStop(state.projectId, state.record.id)"')
-    expect(cardBlock).toContain('@resume="doResume(state.projectId, state.record.id)"')
+  })
+
+  test('the one thread gets the five actions wired: send, pick, ship, stop, resume', () => {
+    const threadBlock = SOURCE.slice(
+      SOURCE.indexOf('<PilotThread'),
+      SOURCE.indexOf('/>', SOURCE.indexOf('<PilotThread')),
+    )
+    expect(threadBlock).toContain('@send="onSend"')
+    expect(threadBlock).toContain('@pick="onPick"')
+    expect(threadBlock).toContain(
+      '@ship="doShip(selectedState.projectId, selectedState.record.id)"',
+    )
+    expect(threadBlock).toContain(
+      '@stop="doStop(selectedState.projectId, selectedState.record.id)"',
+    )
+    expect(threadBlock).toContain(
+      '@resume="doResume(selectedState.projectId, selectedState.record.id)"',
+    )
   })
 
   test('ship/stop/resume each call the matching useTasks action, tracked as sending', () => {
@@ -153,77 +158,39 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
     expect(SOURCE).toContain('tasks.reply(projectId, taskId, message)')
   })
 
-  test('the lens opens/closes through PilotLogic, never a hand-rolled toggle', () => {
-    expect(SOURCE).toContain('openLens(lensState.value, taskId, block)')
-    expect(SOURCE).toContain('closeLens()')
-  })
-
-  test('each lens block renders the matching pilot component with the matching title key', () => {
-    for (const [block, cmp, key] of [
-      ['evidence', 'EvidenceBlock', 'pilot.evidence.title'],
-      ['recap', 'RecapBlock', 'pilot.recap.title'],
-      ['checks', 'ChecksBlock', 'pilot.checks.title'],
-      ['criteria', 'CriteriaBlock', 'pilot.criteria.title'],
-      ['question', 'QuestionBlock', 'pilot.question.waiting'],
-    ] as const) {
-      expect(SOURCE).toContain(`lensBlock === '${block}'`)
-      expect(SOURCE).toContain(`<${cmp}`)
-      expect(SOURCE).toContain(`${block}: '${key}'`)
-    }
-  })
-
-  test('open-full, the expanded lane and the mobile pane all render the same PilotThread', () => {
-    expect(SOURCE.match(/<PilotThread\b/g)).toHaveLength(3)
-    expect(SOURCE).toContain('class="pv-expanded-thread"')
-    expect(SOURCE).toContain('class="pv-lane-thread"')
-    expect(SOURCE).toContain('v-if="expandedLaneId === state.record.id"')
-    expect(SOURCE).toContain('show-back')
+  test('exactly one thread and one list: no lane, no lens, no second mobile list', () => {
+    expect(SOURCE.match(/<PilotThread\b/g)).toHaveLength(1)
+    expect(SOURCE.match(/<ConversationsList\b/g)).toHaveLength(1)
+    expect(SOURCE).not.toContain('<Lens')
+    expect(SOURCE).not.toContain('<AgentCard')
+    expect(SOURCE).not.toContain('<MobileList')
     expect(SOURCE).not.toContain('MobileThread')
-    // Only one other <Lens overlay besides the block lens: open-full reuses
-    // the same shell rather than a second modal implementation.
-    expect(SOURCE.match(/<Lens\b/g)).toHaveLength(2)
   })
 
-  test('widening a lane hydrates its events, same as open-full', () => {
-    const toggleBlock = SOURCE.slice(
-      SOURCE.indexOf('function onToggleLane'),
-      SOURCE.indexOf('function onCloseLane'),
-    )
-    expect(toggleBlock).toContain('hydrateEventsIfNeeded(target)')
+  test('the centred stage is one column, capped and centred, never a grid template', () => {
+    const styleBlock = SOURCE.slice(SOURCE.indexOf('<style'), SOURCE.lastIndexOf('</style>'))
+    expect(styleBlock).toContain('max-width: 100ch;')
+    expect(styleBlock).toContain('margin-inline: auto;')
+    expect(styleBlock).toContain('width: 30ch;')
+    expect(styleBlock).not.toContain('grid-template-columns')
   })
 
-  test('mobile: open sets the selection, back clears it, mobilePane picks the pane', () => {
-    expect(SOURCE).toContain('mobilePane(selectedId.value)')
-    expect(SOURCE).toContain('@open="onMobileOpen"')
-    expect(SOURCE).toContain('selectedId.value = taskId')
+  test('selecting a conversation opens it, back clears it', () => {
+    expect(SOURCE).toContain('@select="onSelect"')
+    expect(SOURCE).toContain('selectedId.value = state.record.id')
     expect(SOURCE).toContain('@back="selectedId = null"')
   })
 
-  test('the top bar and grid hide at 760px in favor of the mobile pane', () => {
+  test('the narrow layout swaps list and thread on the same selection flag', () => {
+    expect(SOURCE).toContain(':data-selected="selectedState !== null"')
+    expect(SOURCE).toContain('show-back')
     expect(SOURCE).toContain('@media (max-width: 760px)')
-    expect(SOURCE).toContain('.pv-top,')
-    expect(SOURCE).toContain('.pv-grid {')
-    expect(SOURCE).toContain('.pv-mobile {')
+    expect(SOURCE).toContain(".pv-body[data-selected='true'] .pv-list {")
+    expect(SOURCE).toContain(".pv-body[data-selected='false'] .pv-stage {")
   })
 
-  test('the grid is fixed lanes (max 4, closable) built from PilotLogic, never a raw column count', () => {
-    expect(SOURCE).toContain('visibleLanes(tasks.states.value, closed.value)')
-    expect(SOURCE).toContain('hiddenStates(tasks.states.value, closed.value)')
-    expect(SOURCE).toContain('laneTemplate(')
-    expect(SOURCE).toContain("'grid-template-columns': laneGridTemplate")
-    expect(SOURCE).not.toContain('COLS_OPTIONS')
-    expect(SOURCE).not.toContain('data-cols')
-  })
-
-  test('a lane bar click, its expand button, and its close button all read PilotLogic', () => {
-    expect(SOURCE).toContain('toggleExpanded(expandedLaneId.value, id)')
-    expect(SOURCE).toContain('closed.value = [...closed.value, id]')
-    expect(SOURCE).toContain('closed.value.filter((closedId) => closedId !== id)')
-  })
-
-  test('closed lane ids are pruned against the live task list on every states change', () => {
-    expect(SOURCE).toContain('pruneClosed(')
-    expect(SOURCE).toContain('states.map((state) => state.record.id)')
+  test('creating a conversation hands over to the classic shell, where the draft composer lives', () => {
+    expect(SOURCE).toContain('@create="onSwitchShell"')
   })
 
   test('switching to the classic shell persists the choice and emits switch-shell', () => {
@@ -232,15 +199,15 @@ describe('PilotView: data model wiring (pinned on the source, see file header)',
   })
 })
 
-// Review fix: opening a card in full (or on mobile) used to show an empty
-// thread for any task whose events had never streamed in live, since
+// Review fix: opening a conversation used to show an empty thread for any
+// task whose events had never streamed in live, since
 // recap/evidence/checks were the only things PilotView ever hydrated. Full
-// event history is fetched (a) eagerly for the attention cards that show
-// their question inline, unopened, mirroring WorkspaceView's own
-// `hydratedForQuestion`, and (b) on demand the moment a card is opened
-// (open-full, mobile select), mirroring WorkspaceView's `openConversation`.
-// Verified on the source: see the file-header limitation on rendering a
-// populated store under SSR.
+// event history is fetched (a) eagerly for the attention tasks the reader is
+// expected to answer next, mirroring WorkspaceView's own
+// `hydratedForQuestion`, and (b) on demand the moment a conversation is
+// selected, mirroring WorkspaceView's `openConversation`. Verified on the
+// source: see the file-header limitation on rendering a populated store
+// under SSR.
 describe('PilotView: full event history is hydrated, not left to the live stream alone', () => {
   test('the attention statuses (waiting_for_you, review_ko) are hydrated eagerly, like WorkspaceView', () => {
     expect(SOURCE).toContain(
@@ -254,7 +221,7 @@ describe('PilotView: full event history is hydrated, not left to the live stream
     expect(hydrateIfNeededBlock).toContain('hydrateEventsIfNeeded(state)')
   })
 
-  test('any card is hydrated on demand through tasks.hydrate, guarded by the same requested set', () => {
+  test('any task is hydrated on demand through tasks.hydrate, guarded by the same requested set', () => {
     const hydrateEventsBlock = SOURCE.slice(
       SOURCE.indexOf('function hydrateEventsIfNeeded'),
       SOURCE.indexOf('\n}\n', SOURCE.indexOf('function hydrateEventsIfNeeded')),
@@ -264,40 +231,32 @@ describe('PilotView: full event history is hydrated, not left to the live stream
     expect(hydrateEventsBlock).toContain('tasks.hydrate(state.projectId, state.record.id)')
   })
 
-  test('open-full and the mobile open both trigger the on-demand hydration', () => {
-    const openFullBlock = SOURCE.slice(
-      SOURCE.indexOf('function onOpenFull'),
-      SOURCE.indexOf('\n}\n', SOURCE.indexOf('function onOpenFull')),
+  test('selecting a conversation triggers the on-demand hydration', () => {
+    const selectBlock = SOURCE.slice(
+      SOURCE.indexOf('function onSelect'),
+      SOURCE.indexOf('\n}\n', SOURCE.indexOf('function onSelect')),
     )
-    expect(openFullBlock).toContain('expandedId.value = state.record.id')
-    expect(openFullBlock).toContain('hydrateEventsIfNeeded(state)')
-
-    const mobileOpenBlock = SOURCE.slice(
-      SOURCE.indexOf('function onMobileOpen'),
-      SOURCE.indexOf('\n}\n', SOURCE.indexOf('function onMobileOpen')),
-    )
-    expect(mobileOpenBlock).toContain('selectedId.value = taskId')
-    expect(mobileOpenBlock).toContain('hydrateEventsIfNeeded(target)')
+    expect(selectBlock).toContain('selectedId.value = state.record.id')
+    expect(selectBlock).toContain('hydrateEventsIfNeeded(state)')
   })
 
-  test('a reconnect also re-asks for events on whichever task is currently open', () => {
+  test('a reconnect also re-asks for events on the open conversation', () => {
     const watchBlock = SOURCE.slice(
       SOURCE.indexOf('watch(tasks.connections'),
       SOURCE.indexOf('\n})', SOURCE.indexOf('watch(tasks.connections')),
     )
-    expect(watchBlock).toContain('if (expandedState.value !== null)')
     expect(watchBlock).toContain('if (selectedState.value !== null)')
-    expect(watchBlock.match(/hydrateEventsIfNeeded\(/g)).toHaveLength(2)
+    expect(watchBlock.match(/hydrateEventsIfNeeded\(/g)).toHaveLength(1)
   })
 })
 
-// The header counter used to show "0 agents" over 3 visible cards
+// The header counter used to show "0 agents" over 3 open conversations
 // (workspace.agentsCount only counts running/reviewing tasks): a real SSR
 // render can only ever see the empty pre-mount store (see file header), so
 // the "3 conversations" case is pinned on the source expression plus the new
 // keys' own pluralization, the same way every other populated-store fact in
 // this file is proven.
-describe('PilotView: header counter reads the whole grid, not just the working agents', () => {
+describe('PilotView: header counter reads the whole list, not just the working agents', () => {
   test('the conversation count binds orderedStates.length, not counts.agents', () => {
     const countsBlock = SOURCE.slice(
       SOURCE.indexOf('<div class="pv-counts">'),

@@ -1,4 +1,4 @@
-// SSR string-render tests, same harness as AgentCard.test.ts. Scroll
+// SSR string-render tests, same harness as PilotView.test.ts. Scroll
 // following, the composer's auto-grow and every click handler (back, send,
 // pick, ship, stop, resume, the "other" focus) are DOM-only and not
 // observable via renderToString: only the markup a given `state` renders is
@@ -111,7 +111,7 @@ describe('PilotThread: header', () => {
   })
 })
 
-describe('PilotThread: actions follow the status, same offers as AgentCard', () => {
+describe('PilotThread: actions follow the status, same offers as the status card', () => {
   test('review_ok offers Ship only', async () => {
     const html = await render({ record: { status: 'review_ok' } })
     expect(html).toContain('pt-action--ship')

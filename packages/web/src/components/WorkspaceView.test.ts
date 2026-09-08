@@ -126,7 +126,7 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
 // children of it, which is what keeps a navigation click from ever resizing
 // or moving the navigation itself.
 describe('the desk is three sibling zones', () => {
-  const bodyAt = SOURCE.indexOf('<div v-else class="ws-body">')
+  const bodyAt = SOURCE.indexOf('<div v-else class="ws-body shell"')
   const stageAt = SOURCE.indexOf('<main class="ws-focus">')
 
   test('the rail and the list column both sit before the stage, unconditionally', () => {

@@ -1,4 +1,4 @@
-// SSR string-render tests, same harness as Lens.test.ts: the viewer teleports
+// SSR string-render tests, same harness as PilotView.test.ts: the viewer teleports
 // to body, so its markup is read from the render context's teleports. Wheel,
 // drag and keyboard zoom are DOM-only and covered by MediaViewerLogic.test.ts.
 import { readFileSync } from 'node:fs'

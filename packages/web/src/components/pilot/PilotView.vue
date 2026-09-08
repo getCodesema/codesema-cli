@@ -1,35 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { usePilotPrefs } from '../../composables/usePilotPrefs'
-import { extractQuickReplies } from '../../composables/useQuickReplies'
-import { agentCounts, lastQuestion } from '../../composables/useTaskBoard'
-import { useTasks, type ApiResult, type TaskState } from '../../composables/useTasks'
-import { EXECUTION_STATUS } from '../../execution-status'
-import { G } from '../../glyphs'
-import { t, type MessageKey } from '../../i18n'
+import { agentCounts } from '../../composables/useTaskBoard'
+import { taskKey, useTasks, type ApiResult, type TaskState } from '../../composables/useTasks'
+import { t } from '../../i18n'
 import type { TaskStatus } from '../../types'
-import AgentCard from './AgentCard.vue'
-import ChecksBlock from './ChecksBlock.vue'
-import CriteriaBlock from './CriteriaBlock.vue'
-import EvidenceBlock from './EvidenceBlock.vue'
-import Lens from './Lens.vue'
-import MobileList from './MobileList.vue'
-import {
-  closeLens,
-  hiddenStates,
-  laneTemplate,
-  mobilePane,
-  openLens,
-  orderCards,
-  pruneClosed,
-  toggleExpanded,
-  visibleLanes,
-  type LensBlock,
-  type LensState,
-} from './PilotLogic'
+import ConversationsList from '../rail/ConversationsList.vue'
+import { orderCards } from './PilotLogic'
 import PilotThread from './PilotThread.vue'
-import QuestionBlock from './QuestionBlock.vue'
-import RecapBlock from './RecapBlock.vue'
 
 const props = defineProps<{
   token: string
@@ -38,7 +16,7 @@ const props = defineProps<{
 const emit = defineEmits<{ 'switch-shell': [] }>()
 
 const tasks = useTasks(props.token)
-const { closed, shell } = usePilotPrefs()
+const { shell } = usePilotPrefs()
 
 onMounted(() => tasks.start())
 onUnmounted(tasks.stop)
@@ -50,63 +28,21 @@ function onSwitchShell(): void {
 
 const orderedStates = computed(() => orderCards(tasks.states.value))
 const counts = computed(() => agentCounts(tasks.states.value))
-
-watch(
-  tasks.states,
-  (states) => {
-    closed.value = pruneClosed(
-      closed.value,
-      states.map((state) => state.record.id),
-    )
-  },
-  { immediate: true },
+const projectNameById = computed(
+  () => new Map(tasks.projects.value.map((project) => [project.id, project.name])),
 )
-
-const expandedLaneId = ref<string | null>(null)
-
-const visibleLaneStates = computed(() => visibleLanes(tasks.states.value, closed.value))
-const hiddenLaneStates = computed(() => hiddenStates(tasks.states.value, closed.value))
-const laneGridTemplate = computed(() =>
-  laneTemplate(
-    visibleLaneStates.value.map((state) => state.record.id),
-    expandedLaneId.value,
-  ),
-)
-
-function laneToggleKey(id: string): MessageKey {
-  return expandedLaneId.value === id ? 'pilot.lane.collapse' : 'pilot.lane.expand'
-}
-
-function onToggleLane(id: string): void {
-  expandedLaneId.value = toggleExpanded(expandedLaneId.value, id)
-  const target = findState(id)
-  if (expandedLaneId.value === id && target !== null) {
-    hydrateEventsIfNeeded(target)
-  }
-}
-
-function onCloseLane(id: string): void {
-  closed.value = [...closed.value, id]
-  if (expandedLaneId.value === id) {
-    expandedLaneId.value = null
-  }
-}
-
-function onReopenLane(id: string): void {
-  closed.value = closed.value.filter((closedId) => closedId !== id)
-}
 
 // ── Hydration: recap/evidence/verification/checks, fetched once per visible
 // task ─────────────────────────────────────────────────────────────────
-// Full event history is heavier and only ever read in two places, so unlike
-// recap/evidence/verification/checks it is NOT fetched for every card:
-// eagerly for the attention cards whose question is shown inline, unopened
-// (mirrors WorkspaceView's own `hydratedForQuestion`), and otherwise on
-// demand the moment a card is actually opened (open-full, mobile select),
-// mirroring WorkspaceView's `openConversation`. A reconnect never replays
-// what happened while the stream was down, so every task's
-// recap/evidence/verification/checks ask again on a fresh `connections`
-// tick, and whichever task is currently open re-asks for its events too.
+// Full event history is heavier and only ever read in the open conversation,
+// so unlike recap/evidence/verification/checks it is NOT fetched for every
+// task: eagerly for the attention tasks whose question the reader is
+// expected to answer next (mirrors WorkspaceView's own
+// `hydratedForQuestion`), and otherwise on demand the moment a conversation
+// is actually selected, mirroring WorkspaceView's `openConversation`. A
+// reconnect never replays what happened while the stream was down, so every
+// task's recap/evidence/verification/checks ask again on a fresh
+// `connections` tick, and the open conversation re-asks for its events too.
 
 const requestedHydration = new Set<string>()
 
@@ -162,13 +98,10 @@ watch(tasks.connections, () => {
   for (const state of tasks.states.value) {
     hydrateIfNeeded(state)
   }
-  // The currently open task (full view or mobile thread) is not necessarily
-  // in the eager attention subset above (it may be a terminated task the
-  // reader opened deliberately): re-fetch its events too, matching how
-  // WorkspaceView's own reconnect handling re-hydrates the open conversation.
-  if (expandedState.value !== null) {
-    hydrateEventsIfNeeded(expandedState.value)
-  }
+  // The open conversation is not necessarily in the eager attention subset
+  // above (it may be a terminated task the reader opened deliberately):
+  // re-fetch its events too, matching how WorkspaceView's own reconnect
+  // handling re-hydrates the open conversation.
   if (selectedState.value !== null) {
     hydrateEventsIfNeeded(selectedState.value)
   }
@@ -207,109 +140,34 @@ function findState(taskId: string): TaskState | null {
   return tasks.states.value.find((state) => state.record.id === taskId) ?? null
 }
 
-// ── Lens: one card's block, zoomed ───────────────────────────────────────
-
-const lensState = ref<LensState>(null)
-
-function onOpenLens(taskId: string, block: LensBlock): void {
-  lensState.value = openLens(lensState.value, taskId, block)
-}
-
-const lensTaskState = computed<TaskState | null>(() =>
-  lensState.value === null ? null : findState(lensState.value.taskId),
-)
-
-const lensBlock = computed<LensBlock | null>(() => lensState.value?.block ?? null)
-
-const LENS_BLOCK_TITLE_KEY: Record<LensBlock, MessageKey> = {
-  evidence: 'pilot.evidence.title',
-  recap: 'pilot.recap.title',
-  checks: 'pilot.checks.title',
-  criteria: 'pilot.criteria.title',
-  // No dedicated title key exists for the question block: its own banner
-  // phrase doubles as the lens title.
-  question: 'pilot.question.waiting',
-}
-
-const lensTitle = computed(() => {
-  if (lensTaskState.value === null || lensBlock.value === null) {
-    return ''
-  }
-  return `${lensTaskState.value.record.title} · ${t(LENS_BLOCK_TITLE_KEY[lensBlock.value])}`
-})
-
-const lensQuestion = computed(() => {
-  if (lensTaskState.value === null || lensTaskState.value.record.status !== 'waiting_for_you') {
-    return null
-  }
-  return lastQuestion(lensTaskState.value.events)
-})
-
-const lensQuickReplyOptions = computed(() =>
-  lensQuestion.value === null ? [] : extractQuickReplies(lensQuestion.value),
-)
-
-function onLensPick(option: string): void {
-  if (lensTaskState.value === null) {
-    return
-  }
-  void sendReply(lensTaskState.value.projectId, lensTaskState.value.record.id, option)
-  lensState.value = closeLens()
-}
-
-function onLensOther(): void {
-  lensState.value = closeLens()
-}
-
-// ── Open full: the same thread as an expanded lane, inside the lens shell ─
-
-const expandedId = ref<string | null>(null)
-
-const expandedState = computed<TaskState | null>(() =>
-  expandedId.value === null ? null : findState(expandedId.value),
-)
-
-function onOpenFull(state: TaskState): void {
-  expandedId.value = state.record.id
-  hydrateEventsIfNeeded(state)
-}
-
-function onExpandedSend(text: string): void {
-  if (expandedState.value === null) {
-    return
-  }
-  void sendReply(expandedState.value.projectId, expandedState.value.record.id, text)
-}
-
-function onExpandedPick(option: string): void {
-  onExpandedSend(option)
-}
-
-// ── Mobile: list or thread, never both ───────────────────────────────────
+// ── Selection: the list on the left, the one open conversation in the middle ─
 
 const selectedId = ref<string | null>(null)
-const mobilePaneKind = computed(() => mobilePane(selectedId.value))
+
 const selectedState = computed<TaskState | null>(() =>
   selectedId.value === null ? null : findState(selectedId.value),
 )
 
-function onMobileOpen(taskId: string): void {
-  selectedId.value = taskId
-  const target = findState(taskId)
-  if (target !== null) {
-    hydrateEventsIfNeeded(target)
-  }
+const focusedKeys = computed<string[]>(() =>
+  selectedState.value === null
+    ? []
+    : [taskKey(selectedState.value.projectId, selectedState.value.record.id)],
+)
+
+function onSelect(state: TaskState): void {
+  selectedId.value = state.record.id
+  hydrateEventsIfNeeded(state)
 }
 
-function onMobileSend(text: string): void {
+function onSend(text: string): void {
   if (selectedState.value === null) {
     return
   }
   void sendReply(selectedState.value.projectId, selectedState.value.record.id, text)
 }
 
-function onMobilePick(option: string): void {
-  onMobileSend(option)
+function onPick(option: string): void {
+  onSend(option)
 }
 </script>
 
@@ -337,141 +195,32 @@ function onMobilePick(option: string): void {
       </button>
     </header>
 
-    <div class="pv-grid" :style="{ 'grid-template-columns': laneGridTemplate }">
-      <p v-if="orderedStates.length === 0" class="pv-empty empty">{{ t('pilot.grid.empty') }}</p>
-      <div
-        v-for="state in visibleLaneStates"
-        :key="`${state.projectId}:${state.record.id}`"
-        class="pv-lane"
-      >
-        <div class="pv-lane-bar" @click="onToggleLane(state.record.id)">
-          <span class="pv-lane-title">{{ state.record.title }}</span>
-          <button
-            type="button"
-            class="pv-lane-expand"
-            :aria-pressed="expandedLaneId === state.record.id"
-            :aria-label="t(laneToggleKey(state.record.id))"
-            @click.stop="onToggleLane(state.record.id)"
-          >
-            {{ G.swap }}
-          </button>
-          <button
-            type="button"
-            class="pv-lane-close"
-            :aria-label="t('pilot.lane.close')"
-            @click.stop="onCloseLane(state.record.id)"
-          >
-            {{ G.ko }}
-          </button>
-        </div>
+    <div class="pv-body" :data-selected="selectedState !== null">
+      <ConversationsList
+        class="pv-list"
+        :states="orderedStates"
+        :project-names="projectNameById"
+        :focused-keys="focusedKeys"
+        @select="onSelect"
+        @create="onSwitchShell"
+      />
+
+      <main class="pv-stage">
         <PilotThread
-          v-if="expandedLaneId === state.record.id"
-          class="pv-lane-thread"
-          :state="state"
-          :sending="sendingTaskIds.has(state.record.id)"
-          @send="(text) => sendReply(state.projectId, state.record.id, text)"
-          @pick="(option) => sendReply(state.projectId, state.record.id, option)"
-          @ship="doShip(state.projectId, state.record.id)"
-          @stop="doStop(state.projectId, state.record.id)"
-          @resume="doResume(state.projectId, state.record.id)"
+          v-if="selectedState !== null"
+          class="pv-thread"
+          show-back
+          :state="selectedState"
+          :sending="sendingTaskIds.has(selectedState.record.id)"
+          @back="selectedId = null"
+          @send="onSend"
+          @pick="onPick"
+          @ship="doShip(selectedState.projectId, selectedState.record.id)"
+          @stop="doStop(selectedState.projectId, selectedState.record.id)"
+          @resume="doResume(selectedState.projectId, selectedState.record.id)"
         />
-        <AgentCard
-          v-else
-          :state="state"
-          :sending="sendingTaskIds.has(state.record.id)"
-          @open-full="onOpenFull(state)"
-          @open-lens="onOpenLens(state.record.id, $event)"
-          @send="(text) => sendReply(state.projectId, state.record.id, text)"
-          @pick="(option) => sendReply(state.projectId, state.record.id, option)"
-          @ship="doShip(state.projectId, state.record.id)"
-          @stop="doStop(state.projectId, state.record.id)"
-          @resume="doResume(state.projectId, state.record.id)"
-        />
-      </div>
-    </div>
-
-    <div v-if="hiddenLaneStates.length > 0" class="pv-hidden-bar">
-      <span class="pv-hidden-label">{{
-        t('pilot.lane.hidden', { n: hiddenLaneStates.length })
-      }}</span>
-      <button
-        v-for="state in hiddenLaneStates"
-        :key="`hidden:${state.projectId}:${state.record.id}`"
-        type="button"
-        class="pv-hidden-chip"
-        :aria-label="t('pilot.lane.reopen')"
-        @click="onReopenLane(state.record.id)"
-      >
-        <span
-          class="pv-hidden-dot status"
-          :data-tone="EXECUTION_STATUS[state.record.status].tone"
-          aria-hidden="true"
-        />
-        <span class="pv-hidden-title">{{ state.record.title }}</span>
-      </button>
-    </div>
-
-    <Lens
-      v-if="lensTaskState !== null && lensBlock !== null"
-      :title="lensTitle"
-      @close="lensState = closeLens()"
-    >
-      <EvidenceBlock
-        v-if="lensBlock === 'evidence'"
-        :project-id="lensTaskState.projectId"
-        :task-id="lensTaskState.record.id"
-        :evidence="lensTaskState.evidence ?? null"
-        :verification="lensTaskState.verification ?? null"
-      />
-      <RecapBlock v-else-if="lensBlock === 'recap'" :recap="lensTaskState.recap ?? null" />
-      <ChecksBlock v-else-if="lensBlock === 'checks'" :checks="lensTaskState.checks" />
-      <CriteriaBlock
-        v-else-if="lensBlock === 'criteria'"
-        :criteria="lensTaskState.recap?.criteria"
-      />
-      <QuestionBlock
-        v-else-if="lensBlock === 'question'"
-        :question="lensQuestion"
-        :options="lensQuickReplyOptions"
-        :disabled="sendingTaskIds.has(lensTaskState.record.id)"
-        @pick="onLensPick"
-        @other="onLensOther"
-      />
-    </Lens>
-
-    <Lens
-      v-if="expandedState !== null"
-      flush
-      :title="expandedState.record.title"
-      @close="expandedId = null"
-    >
-      <PilotThread
-        class="pv-expanded-thread"
-        :state="expandedState"
-        :sending="sendingTaskIds.has(expandedState.record.id)"
-        @send="onExpandedSend"
-        @pick="onExpandedPick"
-        @ship="doShip(expandedState.projectId, expandedState.record.id)"
-        @stop="doStop(expandedState.projectId, expandedState.record.id)"
-        @resume="doResume(expandedState.projectId, expandedState.record.id)"
-      />
-    </Lens>
-
-    <div class="pv-mobile">
-      <PilotThread
-        v-if="mobilePaneKind === 'thread' && selectedState !== null"
-        class="pv-mobile-thread"
-        show-back
-        :state="selectedState"
-        :sending="sendingTaskIds.has(selectedState.record.id)"
-        @back="selectedId = null"
-        @send="onMobileSend"
-        @pick="onMobilePick"
-        @ship="doShip(selectedState.projectId, selectedState.record.id)"
-        @stop="doStop(selectedState.projectId, selectedState.record.id)"
-        @resume="doResume(selectedState.projectId, selectedState.record.id)"
-      />
-      <MobileList v-else :states="orderedStates" @open="onMobileOpen" />
+        <p v-else class="pv-empty empty">{{ t('pilot.grid.empty') }}</p>
+      </main>
     </div>
   </div>
 </template>
@@ -539,148 +288,66 @@ function onMobilePick(option: string): void {
   color: var(--fg);
 }
 
-.pv-grid {
+.pv-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  display: grid;
-  grid-auto-rows: minmax(calc(var(--row) * 14), 1fr);
-  gap: var(--row) 2ch;
+  display: flex;
+}
+
+.pv-list {
+  flex: none;
+  width: 30ch;
+  min-height: 0;
+}
+
+.pv-stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: var(--row) 2ch;
 }
 
+.pv-thread {
+  flex: 1;
+  width: 100%;
+  max-width: 100ch;
+  min-height: 0;
+  margin-inline: auto;
+}
+
 .pv-empty {
-  grid-column: 1 / -1;
-  margin: auto;
   max-width: 60ch;
+  margin: auto;
 }
 
-.pv-lane {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
-.pv-lane > .ac-root,
-.pv-lane > .pv-lane-thread {
-  flex: 1;
-  min-height: 0;
-}
-
-.pv-lane-bar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 1ch;
-  padding: 2px 1ch;
-  cursor: pointer;
-}
-
-.pv-lane-title {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--fg-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.pv-lane-expand,
-.pv-lane-close {
-  flex: none;
-  border: 0;
-  background: transparent;
-  padding: 0 1ch;
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg-dim);
-  cursor: pointer;
-}
-
-.pv-lane-expand:hover,
-.pv-lane-close:hover {
-  color: var(--fg);
-  background: var(--bg-hover);
-}
-
-.pv-lane-expand[aria-pressed='true'] {
-  color: var(--accent);
-}
-
-.pv-hidden-bar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 1ch;
-  padding: 2px 2ch;
-  border-top: 1px solid var(--line);
-  overflow-x: auto;
-}
-
-.pv-hidden-label {
-  flex: none;
-  font-size: 12px;
-  color: var(--fg-dim);
-  white-space: nowrap;
-}
-
-.pv-hidden-chip {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 1ch;
-  border: 1px solid var(--line);
-  padding: 0 1ch;
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg-dim);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.pv-hidden-chip:hover {
-  border-color: var(--fg-muted);
-  color: var(--fg);
-}
-
-.pv-hidden-dot {
-  flex: none;
-}
-
-.pv-hidden-title {
-  max-width: 24ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pv-expanded-thread {
-  width: min(860px, 92vw);
-  height: min(760px, 86vh);
-}
-
-.pv-mobile {
-  display: none;
-  flex: 1;
-  min-height: 0;
-}
-
-.pv-mobile-thread {
-  flex: 1;
-  border: 0;
+/* The back button belongs to the narrow layout, where the list and the
+   thread never share the screen; the same single PilotThread instance
+   serves both widths, so the wide layout hides it rather than mounting a
+   second thread without `show-back`. */
+@media (min-width: 761px) {
+  .pv-thread :deep(.pt-back) {
+    display: none;
+  }
 }
 
 @media (max-width: 760px) {
-  .pv-top,
-  .pv-grid,
-  .pv-hidden-bar {
+  .pv-list {
+    width: 100%;
+    border-right: 0;
+  }
+
+  .pv-stage {
+    padding: 0;
+  }
+
+  .pv-body[data-selected='true'] .pv-list {
     display: none;
   }
 
-  .pv-mobile {
-    display: flex;
+  .pv-body[data-selected='false'] .pv-stage {
+    display: none;
   }
 }
 </style>
