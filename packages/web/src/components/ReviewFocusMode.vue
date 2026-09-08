@@ -541,10 +541,10 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-warn {
-  border: 1px solid var(--warn);
+  border-left: 2px solid var(--warn);
   color: var(--warn);
   font-size: 12px;
-  padding: 2px 1ch;
+  padding: 0 1ch;
 }
 
 .fv-run {
@@ -560,8 +560,8 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-fix-done {
-  border: 1px solid var(--ok);
-  padding: 2px 1ch;
+  border-left: 2px solid var(--ok);
+  padding: 0 1ch;
   display: flex;
   flex-direction: column;
 }
@@ -655,21 +655,24 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 }
 
 .fv-sugg {
-  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .fv-sugg-head {
   color: var(--ok);
-  padding: 0 1ch;
   font-size: 12px;
   font-weight: 700;
-  border-bottom: 1px solid var(--line);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .fv-sugg-code {
   margin: 0;
   padding: 2px 1ch;
   background: var(--bg-raised);
+  border-left: 2px solid var(--ok);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -677,7 +680,6 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
 
 .fv-code {
   border: 1px solid var(--line);
-  background: var(--bg-raised);
 }
 
 .fv-code-head {
@@ -728,6 +730,7 @@ function richParts(s: string): { text: string; isCode: boolean }[] {
   text-align: right;
   padding: 0 1ch;
   color: var(--fg-muted);
+  background: var(--bg-raised);
   user-select: none;
 }
 

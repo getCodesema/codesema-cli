@@ -207,7 +207,7 @@ function parsedDiffFiles(diff: FileDiffState): DiffFile[] {
   gap: 2ch;
   padding: 2px 1ch;
   border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
+  background: var(--bg);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }

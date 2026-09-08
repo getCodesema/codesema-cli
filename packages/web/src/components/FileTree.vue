@@ -167,7 +167,6 @@ function toggleDir(path: string) {
   width: 36ch;
   flex-shrink: 0;
   border-right: 1px solid var(--line);
-  background: var(--bg-raised);
   overflow: hidden;
   height: 100%;
 }

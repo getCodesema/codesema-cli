@@ -74,7 +74,6 @@ const reversedDecisions = computed(() => [...(props.judge?.decisions ?? [])].toR
 <style scoped>
 .djp-root {
   border: 1px solid var(--line);
-  background: var(--bg-raised);
   padding: calc(var(--row) / 2) 1ch;
   display: flex;
   flex-direction: column;

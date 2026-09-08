@@ -562,6 +562,7 @@ function onFilePick(path: string) {
   align-items: baseline;
   gap: 2ch;
   padding: var(--row) 2ch;
+  border-bottom: 1px solid var(--line);
 }
 
 .sr-header-main {
@@ -866,7 +867,7 @@ function onFilePick(path: string) {
   display: flex;
   align-items: center;
   gap: 1ch;
-  background: var(--bg-raised);
+  background: var(--bg);
   border: 1px solid var(--line);
   padding: 2px 1ch;
 }

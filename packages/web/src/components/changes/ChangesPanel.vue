@@ -401,7 +401,7 @@ function refreshFiles(): void {
      it on that side. */
   border: 1px solid var(--line);
   border-right: none;
-  background: var(--bg-raised);
+  background: var(--bg);
   overflow: hidden;
 }
 

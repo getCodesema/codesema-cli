@@ -77,7 +77,6 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
 <style scoped>
 .dmap-root {
   border: 1px solid var(--line);
-  background: var(--bg-raised);
   padding: calc(var(--row) / 2) 1ch;
 }
 
@@ -100,10 +99,15 @@ const tree = computed(() => buildConsensusTree(previewRows.value))
   align-items: baseline;
   gap: 1ch;
   padding: 0 1ch;
+  border-left: 2px solid transparent;
 }
 
 .dmap-row--hot {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-left-color: var(--accent);
+}
+
+.dmap-row--hot .dmap-path {
+  color: var(--accent);
 }
 
 .dmap-dot {

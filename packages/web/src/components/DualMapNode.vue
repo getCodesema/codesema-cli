@@ -76,10 +76,16 @@ const padding = paddingFor(props.depth, props.node.kind)
   gap: 1ch;
   padding-right: 1ch;
   min-width: 0;
+  border-left: 2px solid transparent;
 }
 
 .dmn-row--hot {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-left-color: var(--accent);
+}
+
+.dmn-row--hot .dmn-dir-name,
+.dmn-row--hot .dmn-file-name {
+  color: var(--accent);
 }
 
 .dmn-dot {

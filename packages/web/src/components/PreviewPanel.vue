@@ -139,7 +139,7 @@ function fileLabel(file: PreviewFile): string {
             :class="{ 'pv-file--selected': file.path === selectedPath }"
             @click="pickFile(file.path)"
           >
-            <span class="badge pv-file-status" :class="`pv-file-status--${file.status}`">{{
+            <span class="pv-file-status" :class="`pv-file-status--${file.status}`">{{
               STATUS_LABEL[file.status]
             }}</span>
             <span class="pv-file-path" :title="fileLabel(file)">{{ fileLabel(file) }}</span>
@@ -229,7 +229,7 @@ function fileLabel(file: PreviewFile): string {
   padding: 0;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 
 .pv-file {
@@ -239,8 +239,9 @@ function fileLabel(file: PreviewFile): string {
   gap: 1ch;
   padding: 0 1ch;
   border: none;
+  border-top: 1px solid var(--line);
   border-left: 2px solid transparent;
-  background: var(--bg-raised);
+  background: none;
   cursor: pointer;
   font: inherit;
   color: var(--fg-dim);
@@ -259,6 +260,9 @@ function fileLabel(file: PreviewFile): string {
 
 .pv-file-status {
   flex-shrink: 0;
+  width: 2ch;
+  text-align: center;
+  color: var(--fg-dim);
 }
 
 .pv-file-status--added {

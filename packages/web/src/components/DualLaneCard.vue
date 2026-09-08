@@ -78,7 +78,6 @@ const severityCounts = computed(() => {
 <style scoped>
 .dlane-root {
   border: 1px solid var(--line);
-  background: var(--bg-raised);
   padding: calc(var(--row) / 2) 1ch;
   min-width: 0;
 }
@@ -112,7 +111,7 @@ const severityCounts = computed(() => {
 .dlane-sevrow {
   display: flex;
   flex-wrap: wrap;
-  gap: 1ch;
+  gap: 2ch;
 }
 
 .dlane-chip {
@@ -120,8 +119,6 @@ const severityCounts = computed(() => {
   align-items: baseline;
   gap: 1ch;
   font-size: 12px;
-  border: 1px solid var(--line);
-  padding: 0 1ch;
 }
 
 .dlane-chip--zero {

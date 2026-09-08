@@ -274,8 +274,7 @@ const VERDICT_META: Record<string, { labelKey: string; v: VerdictTone }> = {
 
 .live-chip {
   color: var(--fg-dim);
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
+  border: 1px solid currentColor;
   padding: 0 1ch;
 }
 
@@ -352,13 +351,11 @@ const VERDICT_META: Record<string, { labelKey: string; v: VerdictTone }> = {
 .live-steps {
   display: flex;
   flex-wrap: wrap;
-  gap: 1ch;
+  gap: 2ch;
 }
 
 .live-step-pill {
   color: var(--fg-dim);
-  border: 1px solid var(--line);
-  padding: 0 1ch;
   display: inline-flex;
   align-items: baseline;
   gap: 1ch;

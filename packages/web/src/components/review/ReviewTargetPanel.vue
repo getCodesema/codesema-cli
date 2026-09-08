@@ -169,7 +169,6 @@ const VERDICT_KEYS: Record<ReviewArchiveSummary['verdict'], MessageKey> = {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  background: var(--bg-raised);
 }
 
 .rtp-head {

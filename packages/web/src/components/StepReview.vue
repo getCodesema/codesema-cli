@@ -366,8 +366,8 @@ function scrollToFile(filePath: string) {
 }
 
 .steprev-towatch {
-  border: 1px solid var(--warn);
-  padding: calc(var(--row) / 2) 1ch;
+  border-left: 2px solid var(--warn);
+  padding: 0 1ch;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -482,9 +482,9 @@ function scrollToFile(filePath: string) {
   display: flex;
   align-items: baseline;
   gap: 1ch;
-  padding: calc(var(--row) / 2) 1ch;
+  padding: 0 1ch;
   margin: var(--row) 2ch 0;
-  border: 1px solid var(--accent);
+  border-left: 2px solid var(--accent);
 }
 
 .steprev-banner-mark {
