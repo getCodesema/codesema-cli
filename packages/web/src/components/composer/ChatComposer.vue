@@ -346,17 +346,16 @@ defineExpose({ focus })
   display: flex;
   flex-direction: column;
   padding: 0;
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
+  border-left: 2px solid transparent;
 }
 
-/* The border itself carries the mode: a colour, no separate badge. */
+/* The left rule alone carries the mode: a colour, no separate badge. */
 .cc-root--temporary {
-  border-color: var(--warn);
+  border-left-color: var(--warn);
 }
 
 .cc-root--private {
-  border-color: var(--info);
+  border-left-color: var(--info);
 }
 
 /* -- Resize handle: invisible at rest, drawn on hover ------------------- */

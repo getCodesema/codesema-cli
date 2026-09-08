@@ -413,7 +413,6 @@ function focusComposer(): void {
   gap: 1ch;
   padding: calc(var(--row) / 2) 1ch;
   border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
 }
 
 .pt-back {
@@ -517,9 +516,7 @@ function focusComposer(): void {
 .pt-block {
   align-self: stretch;
   padding: calc(var(--row) / 2) 1ch;
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--line);
-  background: var(--bg-raised);
+  border-top: 1px solid var(--line);
 }
 
 .pt-tools {
@@ -564,7 +561,6 @@ function focusComposer(): void {
   max-width: 85%;
   padding: 2px 1ch;
   border-left: 2px solid var(--info);
-  background: var(--bg-raised);
 }
 
 .pt-live--settled,
@@ -602,6 +598,5 @@ function focusComposer(): void {
   flex: none;
   padding: calc(var(--row) / 2) 1ch calc(var(--row) / 2 + env(safe-area-inset-bottom));
   border-top: 1px solid var(--line);
-  background: var(--bg-raised);
 }
 </style>

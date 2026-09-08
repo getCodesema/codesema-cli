@@ -270,22 +270,23 @@ function onSend(text: string): void {
 .ac-blocks {
   display: flex;
   flex-direction: column;
-  gap: var(--row);
-  padding: var(--row) 1ch;
+  gap: calc(var(--row) / 2);
+  padding: calc(var(--row) / 2) 1ch;
   min-width: 0;
 }
 
 .ac-zone {
   min-width: 0;
   padding: calc(var(--row) / 2) 1ch;
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
   cursor: zoom-in;
 }
 
-.ac-zone:hover,
-.ac-zone:focus-visible {
-  border-color: var(--fg-muted);
+.ac-zone + .ac-zone {
+  border-top: 1px solid var(--line);
+}
+
+.ac-zone:hover {
+  background: var(--bg-hover);
 }
 
 .ac-foot {

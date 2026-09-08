@@ -240,7 +240,6 @@ function onMediaClick(): void {
   max-width: 100%;
   max-height: 100%;
   border: 1px solid var(--line);
-  background: var(--bg-raised);
   transform-origin: center;
   transition: transform 150ms ease;
   user-select: none;

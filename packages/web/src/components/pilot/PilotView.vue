@@ -493,7 +493,6 @@ function onMobilePick(option: string): void {
   gap: 2ch;
   padding: calc(var(--row) / 2) 2ch;
   border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
 }
 
 .pv-brand {
@@ -575,9 +574,6 @@ function onMobilePick(option: string): void {
   align-items: center;
   gap: 1ch;
   padding: 2px 1ch;
-  border: 1px solid var(--line);
-  border-bottom: 0;
-  background: var(--bg-raised);
   cursor: pointer;
 }
 
@@ -620,7 +616,6 @@ function onMobilePick(option: string): void {
   gap: 1ch;
   padding: 2px 2ch;
   border-top: 1px solid var(--line);
-  background: var(--bg-raised);
   overflow-x: auto;
 }
 
@@ -641,7 +636,6 @@ function onMobilePick(option: string): void {
   font: inherit;
   font-size: 12px;
   color: var(--fg-dim);
-  background: var(--bg-raised);
   cursor: pointer;
   white-space: nowrap;
 }

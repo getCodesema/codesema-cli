@@ -230,7 +230,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 
 .evb-title {
   margin: 0;
-  font-size: var(--fs);
+  font-size: 12px;
   color: var(--fg-dim);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -288,8 +288,7 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 .evb-failed {
   margin: 0;
   padding: 2px 1ch;
-  border: 1px solid var(--err);
-  background: color-mix(in srgb, var(--err) 12%, transparent);
+  border-left: 3px solid var(--err);
   color: var(--err);
 }
 
@@ -312,7 +311,6 @@ const VERIFICATION_TONE: Record<TaskVerificationStatus, 'pass' | 'fail' | 'warn'
 .evb-media {
   width: 100%;
   border: 1px solid var(--line);
-  background: var(--bg-raised);
 }
 
 .evb-open {

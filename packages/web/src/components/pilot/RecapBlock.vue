@@ -81,7 +81,7 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 
 .rcb-title {
   margin: 0;
-  font-size: var(--fs);
+  font-size: 12px;
   color: var(--fg-dim);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -148,7 +148,6 @@ const RECAP_TEST_STATUS_KEY: Record<RecapTestStatus, MessageKey> = {
 
 .rcb-md :deep(pre) {
   padding: calc(var(--row) / 2) 1ch;
-  border: 1px solid var(--line);
   background: var(--bg-raised);
   overflow-x: auto;
 }

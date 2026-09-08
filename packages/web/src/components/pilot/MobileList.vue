@@ -110,7 +110,6 @@ const needsYouCount = computed(
   gap: 2ch;
   padding: calc(var(--row) / 2) 1ch;
   border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
 }
 
 .mbl-title {

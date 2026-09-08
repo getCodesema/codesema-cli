@@ -49,7 +49,7 @@ const tone = computed(() => checksTone(props.checks ?? null))
 
 .ckb-title {
   margin: 0;
-  font-size: var(--fs);
+  font-size: 12px;
   color: var(--fg-dim);
   text-transform: uppercase;
   letter-spacing: 0.08em;
