@@ -5,7 +5,7 @@
 // visibleRows/query/expanded contract — this component builds and filters
 // nothing itself (useCodeReview.ts owns that), it only renders what it is
 // given and reports intent through emits.
-import { ChevronDown, GitBranch, Search, X } from '@lucide/vue'
+import { ChevronDown, GitBranch } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import {
   codeReviewRowKey,
@@ -159,8 +159,8 @@ function historyErrorOf(key: string): string | null {
       </div>
     </header>
 
-    <div class="crl-search">
-      <Search class="crl-search-icon" aria-hidden="true" />
+    <label class="crl-search">
+      <span class="crl-search-glyph" aria-hidden="true">{{ G.search }}</span>
       <input
         ref="searchInput"
         :value="query"
@@ -178,9 +178,9 @@ function historyErrorOf(key: string): string | null {
         :aria-label="t('conversations.searchClear')"
         @click="emit('update:query', '')"
       >
-        <X aria-hidden="true" />
+        {{ G.ko }}
       </button>
-    </div>
+    </label>
 
     <div class="crl-scroll">
       <p v-if="isEmpty" class="crl-empty empty">{{ t('codeReview.empty') }}</p>
@@ -234,7 +234,7 @@ function historyErrorOf(key: string): string | null {
               </span>
 
               <span class="crl-meta">
-                <span class="crl-project-tag badge">{{ entry.row.projectName }}</span>
+                <span class="crl-project-tag">{{ entry.row.projectName }}</span>
 
                 <span
                   v-if="isRunning(entry.row)"
@@ -325,7 +325,8 @@ function historyErrorOf(key: string): string | null {
 .crl-title {
   min-width: 0;
   font-size: var(--fs);
-  color: var(--fg);
+  font-weight: 400;
+  color: inherit;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -333,43 +334,46 @@ function historyErrorOf(key: string): string | null {
 
 .crl-count {
   flex: none;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
 
+/* The kit's borderless appbar search, on its own line under the header and
+   on the same band height, exactly as ConversationsList.vue draws it. */
 .crl-search {
   flex: none;
-  position: relative;
-  padding: calc(var(--row) / 2) 1ch;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: calc(var(--row) + 4px);
+  gap: 1ch;
+  padding: 2px 1ch 2px 2ch;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-dim);
 }
 
-.crl-search-icon {
-  position: absolute;
-  left: 2ch;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 14px;
-  height: 14px;
+.crl-search-glyph {
+  flex: none;
   color: var(--fg-muted);
-  pointer-events: none;
 }
 
 .crl-search-input {
-  width: 100%;
+  flex: 1;
   min-width: 0;
-  padding-left: 4ch;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--fg);
+}
+
+.crl-search-input:focus {
+  outline: none;
 }
 
 .crl-search-clear {
-  position: absolute;
-  right: 2ch;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  flex: none;
+  font: inherit;
   border: none;
   background: transparent;
   color: var(--fg-muted);
@@ -377,13 +381,8 @@ function historyErrorOf(key: string): string | null {
   padding: 0;
 }
 
-.crl-search-clear svg {
-  width: 100%;
-  height: 100%;
-}
-
 .crl-search-clear:hover {
-  color: var(--fg-dim);
+  color: var(--fg);
 }
 
 .crl-scroll {
@@ -532,8 +531,12 @@ function historyErrorOf(key: string): string | null {
   font-size: 12px;
 }
 
+/* The repository is context, not a state: plain muted text, never a pastille
+   competing with the MR state badge on the same line. */
 .crl-project-tag {
   flex: none;
+  font-size: 12px;
+  color: var(--fg-muted);
   white-space: nowrap;
 }
 

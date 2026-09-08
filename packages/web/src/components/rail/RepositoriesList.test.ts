@@ -14,6 +14,7 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import type { ProjectActivity } from '../../composables/useProjects'
+import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import type { Project, ProjectCandidate } from '../../types'
 
@@ -83,6 +84,15 @@ describe('header: title and a count that reflects the registry size', () => {
     })
     expect(html).toMatch(/class="rpl-count">2</)
   })
+
+  test('the title sits at the rail weight, the count is the smaller muted size', () => {
+    const title = SOURCE.slice(SOURCE.indexOf('.rpl-title {'), SOURCE.indexOf('.rpl-count {'))
+    expect(title).toContain('font-weight: 400;')
+    expect(title).toContain('color: inherit;')
+    const count = SOURCE.slice(SOURCE.indexOf('.rpl-count {'), SOURCE.indexOf('.rpl-search {'))
+    expect(count).toContain('font-size: 12px;')
+    expect(count).toContain('color: var(--fg-muted);')
+  })
 })
 
 describe('empty vs. non-empty registry', () => {
@@ -109,6 +119,22 @@ describe('search: no-match message wiring (query is internal state, not a prop â
     expect(html).toContain(t('rail.repositoriesSearchPlaceholder'))
     expect(html).not.toContain('rpl-search-clear')
     expect(html).toContain('padding-right:36px')
+  })
+
+  test('the search glyph is the kit one, from G, never a lucide icon', async () => {
+    const html = await render()
+    expect(html).toContain(`class="rpl-search-glyph" aria-hidden="true">${G.search}<`)
+    expect(SOURCE).not.toContain('<Search')
+  })
+
+  test('the input carries no frame of its own, the line does', () => {
+    const rule = SOURCE.slice(
+      SOURCE.indexOf('.rpl-search-input {'),
+      SOURCE.indexOf('.rpl-search-input:focus'),
+    )
+    expect(rule).toContain('border: 0;')
+    expect(rule).toContain('background: transparent;')
+    expect(SOURCE).toContain('height: calc(var(--row) + 4px);')
   })
 
   test('the no-match branch is wired to its own key, distinct from the empty-registry one', () => {

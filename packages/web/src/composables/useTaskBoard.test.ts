@@ -38,7 +38,6 @@ import {
   statusLabelKey,
   statusPhraseKey,
   streamsLiveText,
-  timeAgo,
   titleFromPrompt,
   verdictLabelKey,
   waitingSince,
@@ -987,9 +986,9 @@ describe('eventTone', () => {
     expect(eventTone(event({ type: 'error' }))).toBe('stop')
   })
 
-  test('turns and reviews in flight are amber, tools neutral', () => {
-    expect(eventTone(event({ type: 'turn_started' }))).toBe('check')
-    expect(eventTone(event({ type: 'review_started' }))).toBe('check')
+  test('turns and reviews in flight are blue (the machine works), tools neutral', () => {
+    expect(eventTone(event({ type: 'turn_started' }))).toBe('busy')
+    expect(eventTone(event({ type: 'review_started' }))).toBe('busy')
     expect(eventTone(event({ type: 'tool_use' }))).toBe('idle')
   })
 
@@ -1586,22 +1585,6 @@ describe('focusTabs', () => {
   test('diff needs a branch to diff against', () => {
     expect(focusTabs(true)[1]?.enabled).toBe(true)
     expect(focusTabs(false)[1]?.enabled).toBe(false)
-  })
-})
-
-describe('timeAgo', () => {
-  const NOW = Date.parse('2026-08-13T10:04:00Z')
-
-  test('renders the relative phrase (no window: English catalog)', () => {
-    expect(timeAgo('2026-08-13T10:00:00Z', NOW)).toBe('4min ago')
-  })
-
-  test('a future stamp clamps to zero instead of going negative', () => {
-    expect(timeAgo('2026-08-13T10:05:00Z', NOW)).toBe('0s ago')
-  })
-
-  test('null on an unparsable date', () => {
-    expect(timeAgo('not-a-date', NOW)).toBeNull()
   })
 })
 

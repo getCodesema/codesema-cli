@@ -607,16 +607,6 @@ export function focusTabs(hasBranch: boolean): FocusTabState[] {
   ]
 }
 
-/** "il y a 4 min" — relative stamp for thread meta lines; null when the date
- * does not parse (the line then simply omits it). */
-export function timeAgo(iso: string, now: number): string | null {
-  const at = Date.parse(iso)
-  if (Number.isNaN(at)) {
-    return null
-  }
-  return t('workspace.agoTime', { t: formatDuration(Math.max(0, now - at)) })
-}
-
 /** Inline-code segments of a message: `code` spans become mono. Pure text
  * split, no markup interpretation beyond backtick pairs. */
 export type TextSegment = { code: boolean; text: string }
@@ -714,17 +704,18 @@ export const EVENT_LABEL_KEY: Record<TaskEventType, MessageKey> = {
   proof: 'workspace.evProof',
 }
 
-/** Semaphore tone of a journal line; review_done resolves from its verdict. */
-export type EventTone = 'go' | 'check' | 'stop' | 'idle'
+/** Semaphore tone of a journal line; review_done resolves from its verdict.
+ * `busy` is the machine at work (blue), `check` a human being waited on (amber). */
+export type EventTone = 'go' | 'check' | 'stop' | 'busy' | 'idle'
 
 const EVENT_TONE: Record<TaskEventType, EventTone> = {
-  turn_started: 'check',
+  turn_started: 'busy',
   tool_use: 'idle',
   tool_result: 'idle',
   message: 'idle',
   question: 'check',
   commit: 'go',
-  review_started: 'check',
+  review_started: 'busy',
   review_done: 'check',
   // Static fallback only: the checks line resolves go/stop from its status
   // (see checksEventLine in useChecks).

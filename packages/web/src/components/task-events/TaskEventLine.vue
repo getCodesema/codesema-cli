@@ -16,6 +16,7 @@ const EVENT_DATA_TONE = {
   go: 'ok',
   check: 'warn',
   stop: 'err',
+  busy: 'info',
   idle: 'idle',
 } as const
 

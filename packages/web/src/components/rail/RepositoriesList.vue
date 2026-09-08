@@ -4,7 +4,7 @@
 // without the "All projects" entry and without the selected project's
 // MR/branch tree — both belong elsewhere now. A local name search is added
 // on top, visually identical to ConversationsList.vue's own search field.
-import { Plus, Search, X } from '@lucide/vue'
+import { Plus } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import type { ProjectActivity } from '../../composables/useProjects'
 import { G } from '../../glyphs'
@@ -128,8 +128,8 @@ function requestRemove(id: string): void {
       <span class="rpl-count">{{ projects.length }}</span>
     </header>
 
-    <div class="rpl-search">
-      <Search class="rpl-search-icon" aria-hidden="true" />
+    <label class="rpl-search">
+      <span class="rpl-search-glyph" aria-hidden="true">{{ G.search }}</span>
       <input
         ref="searchInput"
         v-model="query"
@@ -146,9 +146,9 @@ function requestRemove(id: string): void {
         :aria-label="t('conversations.searchClear')"
         @click="query = ''"
       >
-        <X aria-hidden="true" />
+        {{ G.ko }}
       </button>
-    </div>
+    </label>
 
     <div class="rpl-scroll">
       <p v-if="isEmpty" class="rpl-empty empty">{{ t('rail.repositoriesEmpty') }}</p>
@@ -291,7 +291,8 @@ function requestRemove(id: string): void {
   flex: 1;
   min-width: 0;
   font-size: var(--fs);
-  color: var(--fg);
+  font-weight: 400;
+  color: inherit;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -299,43 +300,46 @@ function requestRemove(id: string): void {
 
 .rpl-count {
   flex: none;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
 
+/* The kit's borderless appbar search, on its own line under the header and
+   on the same band height, exactly as ConversationsList.vue draws it. */
 .rpl-search {
   flex: none;
-  position: relative;
-  padding: calc(var(--row) / 2) 1ch;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: calc(var(--row) + 4px);
+  gap: 1ch;
+  padding: 2px 1ch 2px 2ch;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-dim);
 }
 
-.rpl-search-icon {
-  position: absolute;
-  left: 2ch;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 14px;
-  height: 14px;
+.rpl-search-glyph {
+  flex: none;
   color: var(--fg-muted);
-  pointer-events: none;
 }
 
 .rpl-search-input {
-  width: 100%;
+  flex: 1;
   min-width: 0;
-  padding-left: 4ch;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--fg);
+}
+
+.rpl-search-input:focus {
+  outline: none;
 }
 
 .rpl-search-clear {
-  position: absolute;
-  right: 2ch;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  flex: none;
+  font: inherit;
   border: none;
   background: transparent;
   color: var(--fg-muted);
@@ -343,13 +347,8 @@ function requestRemove(id: string): void {
   padding: 0;
 }
 
-.rpl-search-clear svg {
-  width: 100%;
-  height: 100%;
-}
-
 .rpl-search-clear:hover {
-  color: var(--fg-dim);
+  color: var(--fg);
 }
 
 .rpl-scroll {

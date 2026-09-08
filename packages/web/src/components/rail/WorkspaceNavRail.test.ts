@@ -156,8 +156,8 @@ describe('collapsed state: labels absent from markup, aria-label present', () =>
     }
   })
 
-  test('the collapsed track is 56px, the expanded track 215px', () => {
-    expect(SOURCE).toContain('width: 215px;')
+  test('the collapsed track is 56px, the expanded track 30ch', () => {
+    expect(SOURCE).toContain('width: 30ch;')
     expect(SOURCE).toContain('width: 56px;')
   })
 

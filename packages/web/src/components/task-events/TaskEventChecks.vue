@@ -18,6 +18,7 @@ const ROW_STATUS = {
   go: 'passed',
   check: 'passed',
   stop: 'failed',
+  busy: 'skipped',
   idle: 'skipped',
 } as const
 
@@ -25,6 +26,7 @@ const ROW_GLYPH = {
   go: G.ok,
   check: G.ok,
   stop: G.ko,
+  busy: G.pending,
   idle: G.minus,
 } as const
 

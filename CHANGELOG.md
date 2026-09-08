@@ -25,6 +25,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **The standalone review mode now shares the dark workspace theme**: the light "Semaphore" palette, the `--codesema-*`/`--cs-*` token families, Instrument Sans and JetBrains Mono are gone, along with the Tailwind token bridge.
 - **The conversations rail is one flat list**: a conversation is its title and time between two hairlines, ordered attention first, no grouping by project; a conversation may carry no project.
 - **Task, event and finding states are rendered through semantic tones** (`data-tone`, `data-s`, `data-v`, `data-r`) read by CSS, instead of colour tables in TypeScript.
+- **The conversation reads as one thread**: the header carries the agent-named title and the description, timestamps sit inline at 12px, the user's message is left-aligned with a `you` gutter, the preparation steps fold into one line, checks summarise per turn, inline code is marked, and the ship action is a single primary button in the header.
+- **The rail is icons-only when collapsed and 30ch wide when open**; the three rail lists (conversations, repositories, code review) share the same borderless search line under the same header band.
+- **Turns and reviews in flight are blue** (the machine works); amber is reserved for a human being waited on.
 - **`TaskConversation.vue` and `DiffView.vue` are split** into `task-conversation/*` and `diff/*` components with a thin orchestrator each.
 - **Emojis and glyphs missing from the shipped font are replaced** by the `G` glyph set (`packages/web/src/glyphs.ts`), so no line ever falls back to a second font.
 - **A task card stacks its four blocks in one column** (evidence, recap, checks, criteria) instead of a two-by-two grid.

@@ -125,7 +125,7 @@ const emit = defineEmits<{
 
 <style scoped>
 .wnr-root {
-  width: 215px;
+  width: 30ch;
   flex: none;
   min-height: 0;
   overflow: hidden;

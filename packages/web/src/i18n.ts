@@ -474,7 +474,7 @@ const en = {
   /** The composer's target select, for the scratch project: never its raw
    * name ('scratch'), so it reads as a real choice, not a stray repo. */
   'workspace.noRepoOption': 'No repository',
-  'workspace.focusEmpty': 'Open a conversation from the work queue.',
+  'workspace.focusEmpty': 'Pick a conversation in the list on the left.',
 
   // --- F2 focus zone (tabs / status phrases / quick replies / pin) ---
   'workspace.tabConversation': 'Conversation',
@@ -496,7 +496,6 @@ const en = {
   'workspace.agentLabel': 'Agent',
   'workspace.agentBuildHint':
     'The first task with this agent builds a container image (~1.4 GB); later tasks reuse it.',
-  'workspace.agoTime': '{t} ago',
   'workspace.quickReplyOther': 'Something else…',
   'workspace.phaseQueued': 'queued · waiting for a slot',
   'workspace.phaseQueuedMachine': 'queued · waiting for a machine-wide slot',
@@ -877,29 +876,6 @@ const en = {
     'A branch with no merge request is reviewed against its detected target.',
 
   // --- Relative timestamp, five regimes (conversations column §9) ---
-  'time.yesterdayAt': 'yesterday {t}',
-  'time.weekdayAt': '{day} {t}',
-  'time.monthDay': '{month} {day}',
-  'time.monthDayYear': '{month} {day}, {year}',
-  'time.weekdaySun': 'Sun',
-  'time.weekdayMon': 'Mon',
-  'time.weekdayTue': 'Tue',
-  'time.weekdayWed': 'Wed',
-  'time.weekdayThu': 'Thu',
-  'time.weekdayFri': 'Fri',
-  'time.weekdaySat': 'Sat',
-  'time.monthJan': 'Jan',
-  'time.monthFeb': 'Feb',
-  'time.monthMar': 'Mar',
-  'time.monthApr': 'Apr',
-  'time.monthMay': 'May',
-  'time.monthJun': 'Jun',
-  'time.monthJul': 'Jul',
-  'time.monthAug': 'Aug',
-  'time.monthSep': 'Sep',
-  'time.monthOct': 'Oct',
-  'time.monthNov': 'Nov',
-  'time.monthDec': 'Dec',
 
   'pilot.activity.checks': 'Checks running',
   'pilot.activity.verification': 'Verifying in a fresh environment',
@@ -1364,7 +1340,7 @@ const fr: Record<MessageKey, string> = {
   'workspace.diffAction': 'Diff',
   'workspace.projectTarget': 'Projet cible',
   'workspace.noRepoOption': 'Sans dépôt',
-  'workspace.focusEmpty': 'Ouvre une conversation depuis la file de travail.',
+  'workspace.focusEmpty': 'Choisis une conversation dans la liste à gauche.',
 
   // --- F2 focus zone (tabs / status phrases / quick replies / pin) ---
   'workspace.tabConversation': 'Conversation',
@@ -1380,7 +1356,6 @@ const fr: Record<MessageKey, string> = {
   'workspace.agentLabel': 'Agent',
   'workspace.agentBuildHint':
     'La première tâche avec cet agent construit une image de container (~1,4 Go) ; les suivantes la réutilisent.',
-  'workspace.agoTime': 'il y a {t}',
   'workspace.quickReplyOther': 'Autre chose…',
   'workspace.phaseQueued': 'en file · attend un créneau',
   'workspace.phaseQueuedMachine': 'en file · attend un slot machine',
@@ -1750,29 +1725,6 @@ const fr: Record<MessageKey, string> = {
     'Une branche sans merge request est révisée contre sa cible détectée.',
 
   // --- Horodatage relatif, cinq régimes (colonne des conversations §9) ---
-  'time.yesterdayAt': 'hier {t}',
-  'time.weekdayAt': '{day} {t}',
-  'time.monthDay': '{day} {month}',
-  'time.monthDayYear': '{day} {month} {year}',
-  'time.weekdaySun': 'dim.',
-  'time.weekdayMon': 'lun.',
-  'time.weekdayTue': 'mar.',
-  'time.weekdayWed': 'mer.',
-  'time.weekdayThu': 'jeu.',
-  'time.weekdayFri': 'ven.',
-  'time.weekdaySat': 'sam.',
-  'time.monthJan': 'janv.',
-  'time.monthFeb': 'févr.',
-  'time.monthMar': 'mars',
-  'time.monthApr': 'avr.',
-  'time.monthMay': 'mai',
-  'time.monthJun': 'juin',
-  'time.monthJul': 'juil.',
-  'time.monthAug': 'août',
-  'time.monthSep': 'sept.',
-  'time.monthOct': 'oct.',
-  'time.monthNov': 'nov.',
-  'time.monthDec': 'déc.',
 
   'pilot.activity.checks': 'Vérifications en cours',
   'pilot.activity.verification': 'Vérification en environnement neuf en cours',
