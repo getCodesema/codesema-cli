@@ -2,8 +2,9 @@
 // writes prose with headings, emphasis, lists, code — showing the raw sigils
 // (##, **) in a bubble reads as a bug. Scope is deliberately small: headings,
 // bold/italic, inline code, fenced code blocks, unordered/ordered lists,
-// blockquotes, pipe tables, rules, http(s) links, paragraphs. Everything is HTML-escaped BEFORE any transform,
-// so the output is safe to v-html by construction.
+// blockquotes, pipe tables, rules, http(s) links, inline images, paragraphs.
+// Everything is HTML-escaped BEFORE any transform, so the output is safe to
+// v-html by construction.
 
 const escapeHtml = (s: string): string =>
   s
@@ -24,6 +25,12 @@ function renderInline(escaped: string): string {
       continue
     }
     let text = piece
+    // ![alt](url) before links so the [alt](url) half is not eaten as an <a>.
+    // http(s) or same-origin /api/… (evidence screenshots); never javascript:.
+    text = text.replace(
+      /!\[([^\]]*)\]\(((?:https?:\/\/|\/api\/)[^\s)]+)\)/g,
+      '<img src="$2" alt="$1" loading="lazy" />',
+    )
     // [label](https://…) — http(s) only, never javascript: (input is escaped,
     // but the protocol allowlist keeps the guarantee explicit).
     text = text.replace(

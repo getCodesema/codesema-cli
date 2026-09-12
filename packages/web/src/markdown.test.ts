@@ -48,6 +48,18 @@ describe('renderMarkdown', () => {
     expect(renderMarkdown('[x](javascript:alert(1))')).toContain('[x](javascript:alert(1))')
   })
 
+  test('inline images: http(s) and /api evidence paths only', () => {
+    expect(renderMarkdown('![shot](https://ex.com/a.png)')).toBe(
+      '<p><img src="https://ex.com/a.png" alt="shot" loading="lazy" /></p>',
+    )
+    expect(renderMarkdown('![](/api/tasks/t1/evidence/screenshots%2Fa.png?project=p)')).toBe(
+      '<p><img src="/api/tasks/t1/evidence/screenshots%2Fa.png?project=p" alt="" loading="lazy" /></p>',
+    )
+    // javascript: and bare relative paths stay literal.
+    expect(renderMarkdown('![x](javascript:alert(1))')).toContain('![x](javascript:alert(1))')
+    expect(renderMarkdown('![x](../evil.png)')).toContain('![x](../evil.png)')
+  })
+
   test('mixed document: headings + bold + list + paragraphs', () => {
     const out = renderMarkdown('## Reste à faire\n\n**Où on en est** : ok.\n\n- a\n- b')
     expect(out).toBe(

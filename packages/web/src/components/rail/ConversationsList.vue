@@ -1,12 +1,9 @@
 <script setup lang="ts">
-// Zone 2a of the 3-zone workspace layout: the kit's rail (`.rail/.rail-h`)
-// fed by our conversations. A conversation is NOT a child of a project: this
-// is one flat list of lines, and a conversation with no project is listed
-// like any other. The project of the open conversation is shown by its
-// thread header, never here. Ordering and row rendering stay on
-// orderConversations/searchRightPadding (ConversationsLogic.ts) and
-// ConversationRow.vue, imported one directory over rather than
-// reimplemented.
+// Left column of the 2-zone workspace: conversations only (search, flat
+// list, + new). Theme picker and settings live in the footer so the old
+// category rail is not required. A conversation is NOT a child of a
+// project: one flat list of lines. Ordering and row rendering stay on
+// orderConversations/searchRightPadding and ConversationRow.vue.
 import { computed, ref } from 'vue'
 import { matchesQuery, queueSectionOf } from '../../composables/useTaskBoard'
 import { taskKey, type TaskState } from '../../composables/useTasks'
@@ -14,6 +11,7 @@ import { G } from '../../glyphs'
 import { t } from '../../i18n'
 import ConversationRow from '../conversations/ConversationRow.vue'
 import { orderConversations, searchRightPadding } from '../conversations/ConversationsLogic'
+import ThemePicker from '../ThemePicker.vue'
 
 const props = defineProps<{
   states: TaskState[]
@@ -26,6 +24,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [state: TaskState]
   create: []
+  settings: []
 }>()
 
 const query = ref('')
@@ -120,13 +119,27 @@ function isSelected(state: TaskState): boolean {
         </button>
       </div>
     </div>
+
+    <div class="cvl-footer">
+      <div class="cvl-theme">
+        <ThemePicker compact />
+      </div>
+      <button
+        type="button"
+        class="cvl-settings"
+        :title="t('nav.settings')"
+        :aria-label="t('nav.settings')"
+        @click="emit('settings')"
+      >
+        <span class="cvl-settings-glyph" aria-hidden="true">{{ G.gear }}</span>
+        <span class="cvl-settings-label">{{ t('nav.settings') }}</span>
+      </button>
+    </div>
   </section>
 </template>
 
 <style scoped>
-/* No own width/min-width/max-width any more: the parent slot (the rail's
-   zone 2) gives this its size, exactly like it gives RepositoriesList.vue's
-   root the same 100%, the two being swappable content for the same slot. */
+/* Fills the left column the desk gives it; no fixed width of its own. */
 .cvl-root {
   container-type: inline-size;
   container-name: cvl-shell;
@@ -261,5 +274,46 @@ function isSelected(state: TaskState): boolean {
 
 .cvl-row-btn--selected {
   background: var(--bg-hover);
+}
+
+.cvl-footer {
+  flex: none;
+  border-top: 1px solid var(--line);
+}
+
+.cvl-theme {
+  padding: calc(var(--row) / 2) 1ch calc(var(--row) / 2) 2ch;
+}
+
+.cvl-settings {
+  display: flex;
+  align-items: center;
+  gap: 1ch;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--fg-dim);
+  border: none;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  padding: calc(var(--row) / 2) 2ch;
+  cursor: pointer;
+}
+
+.cvl-settings:hover {
+  color: var(--fg);
+  background: var(--bg-hover);
+}
+
+.cvl-settings-glyph {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.cvl-settings-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

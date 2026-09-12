@@ -121,55 +121,31 @@ describe('the plan is wired to the draft, and never to a creation (T2.6 IV.1/IV.
   })
 })
 
-// Three zones, in this order and never nested: the category rail, the list
-// column, the stage. The rail and the column are siblings OF the stage, not
-// children of it, which is what keeps a navigation click from ever resizing
-// or moving the navigation itself.
-describe('the desk is three sibling zones', () => {
+// Two zones, never nested: conversations list + stage. Category rail,
+// repositories list and code-review list are not primary chrome.
+describe('the desk is two sibling zones', () => {
   const bodyAt = SOURCE.indexOf('<div class="ws-body shell"')
   const stageAt = SOURCE.indexOf('<main class="ws-focus">')
 
-  test('the rail and the list column both sit before the stage, unconditionally', () => {
-    const railAt = SOURCE.indexOf('<WorkspaceNavRail')
+  test('the conversations list sits before the stage, unconditionally', () => {
     const listAt = SOURCE.indexOf('<aside class="ws-list"')
-    expect(bodyAt).toBeLessThan(railAt)
-    expect(railAt).toBeLessThan(listAt)
+    expect(bodyAt).toBeLessThan(listAt)
     expect(listAt).toBeLessThan(stageAt)
-    const railTag = SOURCE.slice(railAt, SOURCE.indexOf('/>', railAt))
-    expect(railTag).not.toContain('v-if')
+    expect(SOURCE).not.toContain('<WorkspaceNavRail')
+    expect(SOURCE).not.toContain('<WorkspaceHeader')
   })
 
-  test('the list column shows exactly one list, chosen by the active category', () => {
+  test('the list column shows only ConversationsList, with no category switch', () => {
     const column = SOURCE.slice(SOURCE.indexOf('<aside class="ws-list"'), stageAt)
-    expect(column).toContain(`v-if="railPrefs.category === 'conversations'"`)
     expect(column).toContain('<ConversationsList')
-    expect(column).toContain('<RepositoriesList')
-    // v-else, not a second v-if: the two can never be on screen together.
-    expect(column).toContain('v-else')
+    expect(column).not.toContain('<RepositoriesList')
+    expect(column).not.toContain('<CodeReviewList')
+    expect(column).not.toContain('railPrefs.category')
   })
 
-  // The header band is an ALIGNMENT of three column headers, never a bar
-  // above them: the rail and the list each draw their own, and the stage's
-  // app bar segment is mounted INSIDE the stage column, first thing.
-  test('the app bar segment is mounted inside the stage, ahead of everything it shows', () => {
-    const headerAt = SOURCE.indexOf('<WorkspaceHeader')
-    expect(headerAt).toBeGreaterThan(stageAt)
-    expect(headerAt).toBeLessThan(SOURCE.indexOf('v-else-if="reviewRecord"'))
-    // …and nothing above the columns: the shell is the root's only child.
-    const rootAt = SOURCE.indexOf('<div class="ws-root">')
-    const shellAt = SOURCE.indexOf('<div class="ws-body shell"')
-    expect(SOURCE.slice(rootAt, shellAt)).not.toContain('<WorkspaceHeader')
-  })
-
-  test('the header carries no brand and no settings wiring: the rail owns both', () => {
-    const headerTag = SOURCE.slice(
-      SOURCE.indexOf('<WorkspaceHeader'),
-      SOURCE.indexOf('/>', SOURCE.indexOf('<WorkspaceHeader')),
-    )
-    expect(headerTag).not.toContain('settings')
-    expect(headerTag).toContain(':agents="counters.agents"')
-    // The one settings entry left is the rail's.
+  test('theme and settings are reachable from the conversations footer', () => {
     expect(SOURCE.split('@settings="toggleSettings"')).toHaveLength(2)
+    expect(SOURCE).toContain('@create="onNewConversation"')
   })
 
   test('the splitter still sits between the list column and the stage', () => {
@@ -185,6 +161,11 @@ describe('the desk is three sibling zones', () => {
     expect(SOURCE).toContain(':default-width="RAIL_LIST_WIDTH_DEFAULT"')
     expect(SOURCE).toContain("t('rail.resizeAria')")
   })
+
+  test('the desk grid is list + splitter + stage (no category rail track)', () => {
+    expect(SOURCE).toContain('grid-template-columns: var(--ws-list-w, 30ch) auto 1fr;')
+    expect(SOURCE).not.toContain('grid-template-columns: auto var(--ws-list-w, 30ch) auto 1fr;')
+  })
 })
 
 // The stage renders one thing at a time, and the order of its branches IS
@@ -193,8 +174,8 @@ describe('the desk is three sibling zones', () => {
 // sober invite is the unconditional fallback.
 describe('the stage shows exactly one thing, in a fixed priority', () => {
   test('the five branches appear in priority order', () => {
-    // Settings first: they replace the stage's content, and the rail entry
-    // that opened them stays on screen to close them again.
+    // Settings first: they replace the stage's content; the list footer
+    // gear that opened them stays on screen to close them again.
     const settingsAt = SOURCE.indexOf('v-if="showSettings"')
     const reviewAt = SOURCE.indexOf('v-else-if="reviewRecord"')
     expect(settingsAt).toBeGreaterThan(-1)
@@ -225,27 +206,19 @@ describe('the stage shows exactly one thing, in a fixed priority', () => {
   })
 })
 
-// Selecting a repository is one gesture with three consequences, and all
-// three have to happen: the list highlights it, the registry lazily fetches
-// its MRs/branches/worktrees, and the stage opens its view. Dropping any one
-// of them leaves the screen describing a repository it has not read.
-describe('selecting a repository loads it and stages it', () => {
-  const fn = SOURCE.slice(
-    SOURCE.indexOf('function selectRepository('),
-    SOURCE.indexOf('// ── Header:'),
-  )
-
-  test('it marks the selection, warms the registry, and opens the view', () => {
-    expect(fn).toContain('filter.value = id')
-    expect(fn).toContain('selectProject(id)')
-    expect(fn).toContain('issues.load(id)')
-    expect(fn).toContain('openRepository(id, railPrefs.activeRepoTab)')
+// Repository browser is not primary chrome: no list-driven selectRepository.
+// The stage can still host a RepositoryView (forge code kept), and its tab
+// preference still persists when that view is open.
+describe('repository stage tab prefs survive without the repositories list', () => {
+  test('no primary-nav selectRepository remains in the shell', () => {
+    expect(SOURCE).not.toContain('function selectRepository(')
+    expect(SOURCE).not.toContain('<RepositoriesList')
   })
 
-  test('the tab it opens on is the one the reader last used', () => {
+  test("the tab switch still persists the reader's last tab", () => {
     const tabFn = SOURCE.slice(
       SOURCE.indexOf('function selectRepoTab('),
-      SOURCE.indexOf('// ── The Branches tab'),
+      SOURCE.indexOf('// ── Code review:'),
     )
     expect(tabFn).toContain('railPrefs.activeRepoTab = tab')
     expect(tabFn).toContain('switchRepoTab(focus.value, tab)')
@@ -322,10 +295,10 @@ describe('the branches table is handed both the corpus and the visible rows', ()
 // ⌘K belongs to the shell, not to a field: which list is on screen is the
 // shell's own state, and the shortcut has to reach whichever one it is.
 describe('the search shortcut reaches the list column', () => {
-  test('the shell owns the listener and focuses both list refs', () => {
+  test('the shell owns the listener and focuses the conversations list', () => {
     expect(SOURCE).toContain("e.key.toLowerCase() === 'k'")
     expect(SOURCE).toContain('conversationsList.value?.focusSearch()')
-    expect(SOURCE).toContain('repositoriesList.value?.focusSearch()')
+    expect(SOURCE).not.toContain('repositoriesList.value?.focusSearch()')
     expect(SOURCE).toContain("window.addEventListener('keydown', onGlobalKeydown)")
     expect(SOURCE).toContain("window.removeEventListener('keydown', onGlobalKeydown)")
   })

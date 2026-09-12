@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// One conversation = ONE line of the rail, on the kit's `.sub` grammar: the
-// label over at most two lines, the timestamp on the first one. Pure
+// One conversation = ONE line of the rail: status dot, label (two lines at
+// most), timestamp on the first line. Tone comes from EXECUTION_STATUS. Pure
 // presentational, props in, nothing owned. The caller
 // (rail/ConversationsList.vue) wraps this in the clickable element and
 // decides what a click does.
@@ -23,6 +23,7 @@ const age = computed(() => formatConversationTimestamp(props.state.record.update
 
 <template>
   <span class="cvr-root" :data-tone="visual.tone" :data-finished="finished">
+    <span class="cvr-dot status" :data-tone="visual.tone" aria-hidden="true" />
     <span class="cvr-title" :title="state.record.title">{{ label }}</span>
     <span class="cvr-age">{{ age }}</span>
   </span>
@@ -31,11 +32,23 @@ const age = computed(() => formatConversationTimestamp(props.state.record.update
 <style scoped>
 .cvr-root {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: auto 1fr auto;
   gap: 1ch;
   align-items: baseline;
   min-width: 0;
   width: 100%;
+}
+
+/* Kit status dot: colour comes from data-tone / EXECUTION_STATUS, never a local hex. */
+.cvr-dot {
+  flex: none;
+  align-self: start;
+  margin-top: 0.35em;
+}
+
+.cvr-dot::before {
+  /* The kit .status glyph; keep the cell itself from taking a word of width. */
+  line-height: 1;
 }
 
 /* Two lines at most: the label wraps once, then cuts. The timestamp keeps

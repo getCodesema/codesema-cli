@@ -1,28 +1,20 @@
 <script setup lang="ts">
-// Workspace shell: the category rail on the left, the list column next to
-// it, and the stage on the right. The three columns open on ONE header band
-// — the rail header, the list header and the stage's app bar segment share a
-// height and a single hairline — because each column owns its own header;
-// the band is an alignment, not a fourth element above them. The stage shows
-// ONE thing at a time, named by a single FocusView value (useWorkspaceNav,
-// pure) rather than deduced from several independent refs. Owns the single
+// Workspace shell: 2-zone chat layout — left conversations list, right
+// thread / VM stage. Category rail, repositories list and code-review list
+// stay in the tree as modules but are not primary chrome. Theme + settings
+// live in the conversations footer. The stage shows ONE thing at a time,
+// named by a single FocusView value (useWorkspaceNav, pure). Owns the single
 // useTasks stream; every child stays presentational and derives from pure
 // functions.
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   buildCodeReviewRows,
   codeReviewRowKey,
-  filterCodeReviewRows,
   type CodeReviewRow,
 } from '../composables/useCodeReview'
 import { useForgePrefs } from '../composables/useForgePrefs'
 import { useIssues } from '../composables/useIssues'
-import {
-  countProjectActivity,
-  isolationForProject,
-  isTrunkBranch,
-  resolveBranchClick,
-} from '../composables/useProjects'
+import { isolationForProject, isTrunkBranch, resolveBranchClick } from '../composables/useProjects'
 import {
   RAIL_LIST_WIDTH_DEFAULT,
   RAIL_LIST_WIDTH_MAX,
@@ -39,7 +31,6 @@ import {
   type BranchSortKey,
 } from '../composables/useRepository'
 import { useReviewSession } from '../composables/useReviewSession'
-import { agentCounts, oldestWaiting } from '../composables/useTaskBoard'
 import {
   createPlanRequests,
   planRequestBody,
@@ -56,9 +47,7 @@ import {
   EMPTY_FOCUS,
   focusFromBranchResolution,
   forkDraft,
-  openRepository,
   openReviewRun,
-  openReviewTarget,
   promoteDraft,
   promoteReviewRun,
   openReview as reviewView,
@@ -68,7 +57,6 @@ import {
   workonDraft,
   type DraftTarget,
   type FocusView,
-  type NavCategory,
   type RepoTab,
 } from '../composables/useWorkspaceNav'
 import { G } from '../glyphs'
@@ -81,10 +69,7 @@ import type {
   ReviewRecord,
 } from '../types'
 import ForgeSplitter from './forge/ForgeSplitter.vue'
-import CodeReviewList from './rail/CodeReviewList.vue'
 import ConversationsList from './rail/ConversationsList.vue'
-import RepositoriesList from './rail/RepositoriesList.vue'
-import WorkspaceNavRail from './rail/WorkspaceNavRail.vue'
 import RepoSettings from './RepoSettings.vue'
 import BranchTable from './repository/BranchTable.vue'
 import RepositoryTiles from './repository/RepositoryTiles.vue'
@@ -94,7 +79,6 @@ import ReviewLive from './ReviewLive.vue'
 import ReviewShell from './ReviewShell.vue'
 import TaskComposer from './TaskComposer.vue'
 import TaskConversation from './TaskConversation.vue'
-import WorkspaceHeader from './WorkspaceHeader.vue'
 
 const props = defineProps<{ token: string }>()
 
@@ -127,12 +111,7 @@ const {
   runChecksSetup,
   applyChecksProposal,
   dismissChecksProposal,
-  selectProject,
   refreshMrs,
-  addProject,
-  removeProject,
-  candidates,
-  discoverCandidates,
   workspace,
   loadProjects,
   preview,
@@ -219,29 +198,7 @@ const scratchProjectId = computed(
 // its MRs, branches and worktrees.
 const filter = ref<string | null>(null)
 
-function selectRepository(id: string): void {
-  filter.value = id
-  selectProject(id)
-  issues.load(id)
-  focus.value = openRepository(id, railPrefs.activeRepoTab)
-}
-
-// ── Header: live counters over every conversation ─────────────────────────
-const counters = computed(() => agentCounts(states.value))
-
-/**
- * The workspace facts of the world the header describes — the filtered
- * project's own, or the process-wide blob under "All projects". Follows the
- * filter for the same reason the isolation badge follows the compose target:
- * `no-remote` is a fact about ONE repo, and reading it off the launch repo
- * would hide a degraded sibling behind a healthy blob.
- */
-const headerWorkspace = computed(() =>
-  isolationForProject(filter.value, projects.value, workspace.value),
-)
-
-/** Every conversation, all projects: the list column groups them by project
- * and searches them itself. */
+/** Every conversation, all projects: the list column is one flat list. */
 const queueStates = computed(() => states.value)
 
 // Attention cards show the agent's question without being opened: hydrate
@@ -272,14 +229,6 @@ watch(
   },
   { immediate: true },
 )
-
-/** Bell click: open the conversation that has waited the longest. */
-function openOldestWaiting(): void {
-  const state = oldestWaiting(states.value)
-  if (state) {
-    openConversation(state.projectId, state.record.id)
-  }
-}
 
 // ── Focus zone: one view at a time ───────────────────────────────────────
 const focus = ref<FocusView>(EMPTY_FOCUS)
@@ -404,15 +353,6 @@ function onFocusDraftRetarget(branch: string, prompt: string): void {
     onDraftRetarget(entry.projectId, entry.draft, branch, prompt)
   }
 }
-
-/** The project the focus zone belongs to, null when it belongs to none. */
-const focusProjectId = computed<string | null>(() => {
-  const view = focus.value
-  if (view.kind === 'conversation' || view.kind === 'draft' || view.kind === 'repository') {
-    return view.projectId
-  }
-  return null
-})
 
 function openConversation(projectId: string, taskId: string): void {
   focus.value = conversationView(projectId, taskId)
@@ -606,59 +546,14 @@ function backFromReview(): void {
   focus.value = closeReview(focus.value)
 }
 
-// ── Repository list: per-project activity counters ────────────────────────
-const activity = computed(() => countProjectActivity(states.value))
-
-// ── Project registry actions ──────────────────────────────────────────────
-const addBusy = ref(false)
-const addError = ref<string | null>(null)
-const removeError = ref<string | null>(null)
-
-async function onAddProject(path: string): Promise<void> {
-  addBusy.value = true
-  addError.value = null
-  const result = await addProject(path)
-  if (!result.ok) {
-    addError.value = result.error
-  }
-  addBusy.value = false
-}
-
-async function onRemoveProject(id: string): Promise<void> {
-  removeError.value = null
-  const result = await removeProject(id)
-  if (!result.ok) {
-    removeError.value = result.error
-    return
-  }
-  // Its store states are gone: drop its filter and its open view too.
-  if (filter.value === id) {
-    filter.value = null
-  }
-  if (focusProjectId.value === id) {
-    focus.value = EMPTY_FOCUS
-  }
-}
+// ── Project registry (kept; not primary chrome — settings / APIs remain) ──
 
 // ── Navigation rail and list column, persisted as one blob ────────────────
 const railPrefs = reactive(readRailPrefs())
 watch(railPrefs, (next) => writeRailPrefs({ ...next }), { deep: true })
 
-function selectCategory(category: NavCategory): void {
-  railPrefs.category = category
-  if (category === 'codeReview') {
-    // Lazy, and only the badges: the per-row history waits for an expand.
-    for (const project of repoProjects.value) {
-      if (!reviewArchives.value.has(project.id)) {
-        void loadReviewArchives(project.id)
-      }
-    }
-  }
-}
-
 type SearchableList = { focusSearch: () => void }
 const conversationsList = ref<SearchableList | null>(null)
-const repositoriesList = ref<SearchableList | null>(null)
 
 /** Cmd/Ctrl+K focuses the list column's own search — the shell owns the
  * shortcut because which list is up is the shell's own state. */
@@ -666,8 +561,6 @@ function onGlobalKeydown(e: KeyboardEvent): void {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault()
     conversationsList.value?.focusSearch()
-    repositoriesList.value?.focusSearch()
-    codeReviewList.value?.focusSearch()
   }
 }
 
@@ -712,66 +605,6 @@ const codeReviewRows = computed<CodeReviewRow[]>(() =>
 const reviewArchives = ref(new Map<string, ReviewArchiveSummary[]>())
 const reviewHistory = ref(new Map<string, ReviewArchiveSummary[]>())
 const reviewHistoryErrors = ref(new Map<string, string>())
-const reviewQuery = ref('')
-
-/** Absent from BOTH maps means "never requested": the list reads that as
- * loading, which is what an expand always starts. */
-function clearHistoryState(key: string): void {
-  const entries = new Map(reviewHistory.value)
-  const errors = new Map(reviewHistoryErrors.value)
-  entries.delete(key)
-  errors.delete(key)
-  reviewHistory.value = entries
-  reviewHistoryErrors.value = errors
-}
-const expandedReviewRows = ref<ReadonlySet<string>>(new Set())
-
-async function loadReviewArchives(projectId: string): Promise<void> {
-  try {
-    const res = await fetch(`/api/reviews/latest?project=${encodeURIComponent(projectId)}`)
-    const body = res.ok ? ((await res.json()) as { latest: ReviewArchiveSummary[] }) : null
-    reviewArchives.value = new Map(reviewArchives.value).set(projectId, body?.latest ?? [])
-  } catch {
-    reviewArchives.value = new Map(reviewArchives.value).set(projectId, [])
-  }
-}
-
-async function loadReviewHistory(row: CodeReviewRow): Promise<void> {
-  const key = codeReviewRowKey(row)
-  const branch = row.kind === 'mr' ? row.mr.sourceBranch : row.branch.name
-  clearHistoryState(key)
-  const query = `project=${encodeURIComponent(row.projectId)}&branch=${encodeURIComponent(branch)}`
-  try {
-    const res = await fetch(`/api/reviews?${query}`)
-    if (!res.ok) {
-      reviewHistoryErrors.value = new Map(reviewHistoryErrors.value).set(key, String(res.status))
-      return
-    }
-    const body = (await res.json()) as { entries: ReviewArchiveSummary[] }
-    reviewHistory.value = new Map(reviewHistory.value).set(key, body.entries)
-  } catch (err) {
-    reviewHistoryErrors.value = new Map(reviewHistoryErrors.value).set(key, String(err))
-  }
-}
-
-function toggleReviewRow(key: string): void {
-  const next = new Set(expandedReviewRows.value)
-  if (next.delete(key)) {
-    expandedReviewRows.value = next
-    return
-  }
-  next.add(key)
-  expandedReviewRows.value = next
-  const row = codeReviewRows.value.find((candidate) => codeReviewRowKey(candidate) === key)
-  if (row && !reviewHistory.value.has(key) && !reviewHistoryErrors.value.has(key)) {
-    void loadReviewHistory(row)
-  }
-}
-
-function openReviewTargetRow(row: CodeReviewRow): void {
-  selectProject(row.projectId)
-  focus.value = openReviewTarget(row.projectId, row.source)
-}
 
 async function onRunReview(mode: MrReviewMode): Promise<void> {
   const target = reviewTarget.value
@@ -801,24 +634,6 @@ async function openArchivedReview(
     // says what it could read.
   }
 }
-
-const visibleCodeReviewRows = computed(() =>
-  filterCodeReviewRows(codeReviewRows.value, reviewQuery.value),
-)
-
-const codeReviewList = ref<SearchableList | null>(null)
-
-const selectedReviewRowKey = computed<string | null>(() => {
-  const view = focus.value
-  if (view.kind !== 'reviewTarget' && view.kind !== 'reviewRun') {
-    return null
-  }
-  const row = codeReviewRows.value.find(
-    (candidate) =>
-      candidate.projectId === view.projectId && sameReviewSource(candidate.source, view.source),
-  )
-  return row ? codeReviewRowKey(row) : null
-})
 
 /** The row the staged target names, for the panel's own props. Null when the
  * list has not caught up with the focus yet (a project still loading). */
@@ -970,54 +785,14 @@ watch(
 <template>
   <div class="ws-root">
     <div class="ws-body shell" :style="{ '--ws-list-w': `${railPrefs.listWidth}px` }">
-      <WorkspaceNavRail
-        :category="railPrefs.category"
-        :collapsed="railPrefs.navCollapsed"
-        :needs-you="counters.needsYou"
-        @update:category="selectCategory"
-        @update:collapsed="(v) => (railPrefs.navCollapsed = v)"
-        @settings="toggleSettings"
-      />
-
       <aside class="ws-list">
         <ConversationsList
-          v-if="railPrefs.category === 'conversations'"
           ref="conversationsList"
           :states="queueStates"
           :focused-keys="focusedKeys"
           @select="(state) => openConversation(state.projectId, state.record.id)"
           @create="onNewConversation"
-        />
-        <CodeReviewList
-          v-else-if="railPrefs.category === 'codeReview'"
-          ref="codeReviewList"
-          :rows="codeReviewRows"
-          :visible-rows="visibleCodeReviewRows"
-          :query="reviewQuery"
-          :running="reviewSession.mrReviewStatus.value"
-          :selected-key="selectedReviewRowKey"
-          :expanded="expandedReviewRows"
-          :history="reviewHistory"
-          :history-errors="reviewHistoryErrors"
-          @update:query="(v: string) => (reviewQuery = v)"
-          @select="openReviewTargetRow"
-          @toggle-expanded="toggleReviewRow"
-          @open-archive="onOpenArchive"
-        />
-        <RepositoriesList
-          v-else
-          ref="repositoriesList"
-          :projects="repoProjects"
-          :selected="filter"
-          :activity="activity"
-          :add-busy="addBusy"
-          :add-error="addError"
-          :remove-error="removeError"
-          :candidates="candidates"
-          @select="selectRepository"
-          @add="onAddProject"
-          @remove="onRemoveProject"
-          @discover="() => void discoverCandidates()"
+          @settings="toggleSettings"
         />
       </aside>
 
@@ -1031,22 +806,12 @@ watch(
       />
 
       <main class="ws-focus">
-        <!-- The stage's segment of the header band: one line, one hairline,
-             shared with the rail and list headers on its left. -->
-        <WorkspaceHeader
-          :needs-you="counters.needsYou"
-          :agents="counters.agents"
-          :workspace="headerWorkspace"
-          @open-oldest-waiting="openOldestWaiting"
-        />
-
         <p v-if="!connected" class="ws-offline live" role="status">
           <span aria-hidden="true">{{ G.attention }}</span>
           <span>{{ t('workspace.connectionLost') }}</span>
         </p>
 
-        <!-- Settings stay INSIDE the stage: the rail entry that opened them
-             is still on screen, and is what closes them again. -->
+        <!-- Settings stay INSIDE the stage: the list footer's gear opens them. -->
         <div v-if="showSettings" class="ws-settings">
           <RepoSettings />
         </div>
@@ -1292,15 +1057,12 @@ watch(
   overflow: auto;
 }
 
-/* Four sibling zones on one grid: the category rail, the list column, its
-   drag handle, the stage. Each carries its own header at the same band
-   height, which is what makes the three headers read as one line. The list
-   width is the one layout value the desk owns, so it rides on the grid track
-   itself. */
+/* Two zones + drag handle: conversations list, splitter, stage. List width
+   is the one layout value the desk owns, so it rides on the grid track. */
 .ws-body {
   flex: 1;
   min-height: 0;
-  grid-template-columns: auto var(--ws-list-w, 30ch) auto 1fr;
+  grid-template-columns: var(--ws-list-w, 30ch) auto 1fr;
   align-items: stretch;
 }
 
@@ -1315,7 +1077,7 @@ watch(
   display: flex;
 }
 
-/* ── Zone 3: the stage ────────────────────────────────────────────────── */
+/* ── Right zone: the stage ─────────────────────────────────────────────── */
 .ws-focus {
   display: flex;
   flex-direction: column;

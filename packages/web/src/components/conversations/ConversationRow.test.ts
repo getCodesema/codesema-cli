@@ -67,12 +67,13 @@ async function render(state: TaskState): Promise<string> {
   return renderToString(app)
 }
 
-describe('one conversation is one line: label, timestamp', () => {
-  test('the line is the conversation label, the timestamp, and nothing else', async () => {
+describe('one conversation is one line: status, label, timestamp', () => {
+  test('the line is the status dot, the conversation label, the timestamp', async () => {
     const html = await render(
       taskState({ title: 'fix the retry loop', branch: 'codesema/task-fix-the-retry-loop' }),
     )
     expect(html).toContain('fix the retry loop')
+    expect(html).toContain('class="cvr-dot status"')
     expect(html).toContain('class="cvr-title"')
     expect(html).toContain('class="cvr-age"')
   })
@@ -131,11 +132,12 @@ describe('nothing else is drawn: no card, no pill, no meta line', () => {
     expect(SOURCE).not.toContain('resolveActivityLine')
   })
 
-  test('the line is the kit grid: the title, the age', () => {
+  test('the line is the kit grid: status, title, age', () => {
     const rule = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-title {'))
-    expect(rule).toContain('grid-template-columns: 1fr auto;')
+    expect(rule).toContain('grid-template-columns: auto 1fr auto;')
     expect(rule).toContain('gap: 1ch;')
     expect(rule).toContain('align-items: baseline;')
+    expect(SOURCE).toContain('class="cvr-dot status"')
   })
 
   test('the label runs over two lines at most, then cuts', () => {
