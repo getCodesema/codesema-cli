@@ -3,8 +3,9 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { G } from './glyphs'
 
-// The kit is one system: 13 colour tokens, one font, no radius, no shadow,
-// three sizes. These guards keep every SFC and stylesheet inside it.
+// The kit is one system: colour tokens, one font, pill/bubble radii only via
+// tokens, no shadow, three sizes. These guards keep every SFC and stylesheet
+// inside it.
 
 const SRC = import.meta.dir
 const sources = [...new Bun.Glob('**/*.{vue,css}').scanSync({ cwd: SRC })]
@@ -45,9 +46,17 @@ describe('tokens', () => {
 })
 
 describe('shape', () => {
-  test('no rounded corner, no shadow', () => {
+  test('rounded corners only via kit radius tokens; no shadow', () => {
+    expect(offenders((file) => /box-shadow:/.test(styleOf(file)))).toEqual([])
     expect(
-      offenders((file) => /border-radius:\s*(?!\s*0;)|box-shadow:/.test(styleOf(file))),
+      offenders((file) =>
+        (styleOf(file).match(/border-radius:\s*[^;]+;/g) ?? []).some(
+          (declaration) =>
+            !/border-radius:\s*(0|var\(--radius-pill\)|var\(--radius-bubble\))\s*;/.test(
+              declaration,
+            ),
+        ),
+      ),
     ).toEqual([])
   })
 

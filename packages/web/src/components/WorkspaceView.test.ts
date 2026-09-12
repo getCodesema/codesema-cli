@@ -164,8 +164,8 @@ describe('the desk is two sibling zones', () => {
   })
 
   test('the desk grid is list + splitter + stage (no category rail track)', () => {
-    expect(SOURCE).toContain('grid-template-columns: var(--ws-list-w, 30ch) auto 1fr;')
-    expect(SOURCE).not.toContain('grid-template-columns: auto var(--ws-list-w, 30ch) auto 1fr;')
+    expect(SOURCE).toContain('grid-template-columns: var(--ws-list-w, 18rem) auto 1fr;')
+    expect(SOURCE).not.toContain('grid-template-columns: auto var(--ws-list-w, 18rem) auto 1fr;')
   })
 })
 

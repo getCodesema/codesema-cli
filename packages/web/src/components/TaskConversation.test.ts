@@ -478,13 +478,16 @@ describe('deleting the branch left the header for the tail of the thread', () =>
   })
 })
 
-describe('the composer is a frame with a prompt, and nothing else until you type', () => {
-  test('an empty draft shows the prompt glyph and the shortcut line, no send button', async () => {
+describe('the composer is a capsule with a prompt, and nothing else until you type', () => {
+  test('an empty draft shows the prompt glyph and no send button, and hides the shortcut hint', async () => {
     const html = await renderConversation({ record: { status: 'waiting_for_you' } })
-    const field = html.slice(html.indexOf('cv-reply-field'), html.indexOf('cv-reply-hint'))
+    const fieldAt = html.indexOf('cv-reply-field')
+    expect(fieldAt).toBeGreaterThan(-1)
+    const field = html.slice(fieldAt, html.indexOf('</form>', fieldAt))
     expect(field).toContain('cv-reply-prompt')
     expect(field).not.toContain('cv-reply-send')
-    expect(html).toContain(t('composer.hintSend'))
+    expect(html).not.toContain('cv-reply-hint')
+    expect(html).not.toContain(t('composer.hintSend'))
   })
 })
 

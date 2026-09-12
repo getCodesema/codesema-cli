@@ -310,14 +310,29 @@ const thinkingLabel = computed(() => {
 
 .cv-thinking {
   flex: none;
-  align-items: center;
+  align-items: stretch;
+  justify-content: stretch;
   border-top: 0;
-  padding: 2px 2ch;
-  background: transparent;
+  padding: 0;
+  margin: 0 auto;
+  max-width: 720px;
+  width: calc(100% - 2rem);
+  height: 2px;
+  min-height: 2px;
+  background: var(--err);
+  overflow: hidden;
 }
 
 .cv-thinking-label {
-  color: var(--fg-dim);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
   font-size: 12px;
 }
 

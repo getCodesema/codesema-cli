@@ -357,17 +357,33 @@ defineExpose({ reset })
 <style scoped>
 .tc-root {
   grid-template-columns: 1fr;
-  border: 1px solid var(--line);
+  border: 0;
+  border-radius: var(--radius-bubble);
+  background: var(--bg-search);
+  padding: 0.85rem 1rem;
 }
 
 /* Inside a draft column the column already draws the card. */
 .tc-root--compact {
   border: 0;
-  padding: 0;
+  border-radius: var(--radius-bubble);
+  padding: 0.85rem 1rem;
+  background: var(--bg-search);
 }
 
 .tc-input {
   min-height: calc(var(--row) * 3);
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+.tc-input:focus {
+  outline: none;
+  border-color: transparent;
 }
 
 .tc-row {
@@ -390,6 +406,7 @@ defineExpose({ reset })
 
 .tc-launch {
   margin-left: auto;
+  border-radius: var(--radius-pill);
 }
 
 .tc-error {

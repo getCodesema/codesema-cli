@@ -25,7 +25,7 @@ export type RailPrefs = {
 
 export const RAIL_LIST_WIDTH_MIN = 240
 export const RAIL_LIST_WIDTH_MAX = 480
-export const RAIL_LIST_WIDTH_DEFAULT = 360
+export const RAIL_LIST_WIDTH_DEFAULT = 280
 
 export const DEFAULT_RAIL_PREFS: RailPrefs = {
   listWidth: RAIL_LIST_WIDTH_DEFAULT,

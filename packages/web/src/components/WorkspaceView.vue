@@ -1063,7 +1063,7 @@ watch(
 .ws-body {
   flex: 1;
   min-height: 0;
-  grid-template-columns: var(--ws-list-w, 30ch) auto 1fr;
+  grid-template-columns: var(--ws-list-w, 18rem) auto 1fr;
   align-items: stretch;
 }
 
@@ -1104,11 +1104,13 @@ watch(
   display: flex;
   flex-direction: column;
   gap: var(--row);
-  max-width: 72ch;
+  max-width: 720px;
   width: 100%;
   margin: calc(var(--row) * 2) auto var(--row);
-  padding: var(--row) 2ch;
-  border: 1px solid var(--line);
+  padding: var(--row) 1.25rem;
+  border: 0;
+  border-radius: var(--radius-bubble);
+  background: var(--bg-raised);
 }
 
 .ws-draft-head {

@@ -124,8 +124,8 @@ describe('TaskEventUser is a right-aligned chat bubble on its own row', () => {
   })
 
   test('the kit fills the user prompt, and rails it no more', () => {
-    expect(kitUserBody()).toContain('background: var(--bg-raised);')
-    expect(kitUserBody()).toContain('padding: calc(var(--row) / 2) 2ch;')
+    expect(kitUserBody()).toContain('background: var(--bg-bubble);')
+    expect(kitUserBody()).toContain('padding: calc(var(--row) / 2) 1.25rem;')
     // Explicit border: 0 is fine; a visible outline/box is not.
     expect(kitUserBody()).not.toMatch(/border:\s*1px/)
     expect(kitUserBody()).not.toContain('outline: 1px')
@@ -140,8 +140,10 @@ describe('TaskEventUser is a right-aligned chat bubble on its own row', () => {
     expect(style).not.toContain('border-left')
   })
 
-  test('square corners: the kit has no radius anywhere', () => {
+  test('user bubble uses the kit bubble radius, component stays square', () => {
     expect(style).not.toContain('border-radius')
+    expect(kitUserBody()).toContain('border-radius: var(--radius-bubble);')
+    expect(kitUserBody()).toContain('background: var(--bg-bubble);')
   })
 
   test('the filled block comes from the kit message grammar', () => {

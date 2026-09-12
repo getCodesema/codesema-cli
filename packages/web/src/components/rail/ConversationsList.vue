@@ -47,8 +47,9 @@ const isEmpty = computed(() => props.states.length === 0)
 const isSearchEmpty = computed(() => props.states.length > 0 && filteredStates.value.length === 0)
 
 // One trailing icon at most today (the clear button, only once a query is
-// typed): the padding is still COMPUTED, never a fixed number.
-const searchPaddingRight = computed(() => searchRightPadding(query.value !== '' ? 1 : 0))
+// typed): the padding is still COMPUTED, never a fixed number. The + action
+// sits in the same pill, so count it as a trailing slot when the clear is out.
+const searchPaddingRight = computed(() => searchRightPadding((query.value !== '' ? 1 : 0) + 1))
 
 const firstFinishedKey = computed(() => {
   const first = orderedStates.value.find((s) => queueSectionOf(s.record.status) === 'done')
@@ -66,19 +67,6 @@ function projectNameOf(state: TaskState): string {
 
 <template>
   <section class="cvl-root rail" :aria-label="t('conversations.title')">
-    <header class="cvl-header rail-h">
-      <span class="cvl-title">{{ t('conversations.title') }}</span>
-      <button
-        type="button"
-        class="cvl-action"
-        :aria-label="t('conversations.newAction')"
-        :title="t('conversations.newAction')"
-        @click="emit('create')"
-      >
-        +
-      </button>
-    </header>
-
     <label class="cvl-search">
       <span class="cvl-search-glyph" aria-hidden="true">{{ G.search }}</span>
       <input
@@ -98,6 +86,15 @@ function projectNameOf(state: TaskState): string {
         @click="query = ''"
       >
         {{ G.ko }}
+      </button>
+      <button
+        type="button"
+        class="cvl-action"
+        :aria-label="t('conversations.newAction')"
+        :title="t('conversations.newAction')"
+        @click="emit('create')"
+      >
+        +
       </button>
     </label>
 
@@ -138,7 +135,6 @@ function projectNameOf(state: TaskState): string {
         @click="emit('settings')"
       >
         <span class="cvl-settings-glyph" aria-hidden="true">{{ G.gear }}</span>
-        <span class="cvl-settings-label">{{ t('nav.settings') }}</span>
       </button>
     </div>
   </section>
@@ -152,45 +148,22 @@ function projectNameOf(state: TaskState): string {
   width: 100%;
   min-height: 0;
   overflow: hidden;
-}
-
-.cvl-header {
-  flex: none;
-  gap: 1ch;
-}
-
-.cvl-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cvl-action {
-  flex: none;
-  font: inherit;
-  background: none;
+  background: var(--bg);
   border: 0;
-  padding: 0 1ch;
-  color: var(--accent);
-  cursor: pointer;
 }
 
-.cvl-action:hover {
-  color: var(--fg);
-}
-
-/* The kit's borderless appbar search, on its own line under the header and
-   on the same band height, so the list keeps one rhythm from top to bottom. */
+/* Capsule search: gray pill, + quiet on the right — no shouting title. */
 .cvl-search {
   flex: none;
   display: flex;
   align-items: center;
   box-sizing: border-box;
-  height: calc(var(--row) + 4px);
-  gap: 1ch;
-  padding: 2px 1ch 2px 2ch;
-  border-bottom: 1px solid var(--line);
+  gap: 0.75rem;
+  margin: 0.75rem 0.85rem 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--bg-search);
   color: var(--fg-dim);
 }
 
@@ -226,6 +199,21 @@ function projectNameOf(state: TaskState): string {
   color: var(--fg);
 }
 
+.cvl-action {
+  flex: none;
+  font: inherit;
+  background: none;
+  border: 0;
+  padding: 0 0.25rem;
+  color: var(--fg-dim);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.cvl-action:hover {
+  color: var(--fg);
+}
+
 .cvl-scroll {
   flex: 1;
   min-height: 0;
@@ -233,13 +221,14 @@ function projectNameOf(state: TaskState): string {
 }
 
 .cvl-empty {
-  margin: calc(var(--row) / 2) 2ch;
+  margin: calc(var(--row) / 2) 1rem;
 }
 
 .cvl-list {
   display: flex;
   flex-direction: column;
-  padding: calc(var(--row) / 2) 0;
+  padding: 0.35rem 0.5rem;
+  gap: 0.15rem;
 }
 
 /* Threshold 1: under 256px each line drops its age column. */
@@ -251,27 +240,21 @@ function projectNameOf(state: TaskState): string {
 
 .cvl-row-btn {
   display: flex;
-  align-items: baseline;
-  width: calc(100% - 2ch);
-  margin: 0 1ch;
+  align-items: flex-start;
+  width: 100%;
+  margin: 0;
   text-align: left;
   font: inherit;
-  padding: calc(var(--row) / 2) 1ch;
+  padding: 0.65rem 0.75rem;
   border: none;
-  border-top: 1px solid var(--line);
+  border-radius: var(--radius-bubble);
   background: transparent;
   color: inherit;
   cursor: pointer;
 }
 
-.cvl-row-btn:last-child {
-  border-bottom: 1px solid var(--line);
-}
-
-/* The only break in the flat list: one blank half-line before the finished
-   pile, the hairline already on the row doing the separating. */
 .cvl-row-btn--finished-start {
-  margin-top: calc(var(--row) / 2);
+  margin-top: 0.5rem;
 }
 
 .cvl-row-btn:hover {
@@ -279,31 +262,45 @@ function projectNameOf(state: TaskState): string {
 }
 
 .cvl-row-btn--selected {
-  background: var(--bg-hover);
+  background: var(--bg-raised);
 }
 
 .cvl-footer {
   flex: none;
-  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem 0.75rem;
+  border-top: 0;
 }
 
 .cvl-theme {
-  padding: calc(var(--row) / 2) 1ch calc(var(--row) / 2) 2ch;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.cvl-theme :deep(.tp-select),
+.cvl-theme :deep(.tp-contrast button) {
+  font-size: 12px;
+  padding: 0 0.4rem;
+  min-width: 0;
 }
 
 .cvl-settings {
-  display: flex;
+  flex: none;
+  display: inline-flex;
   align-items: center;
-  gap: 1ch;
-  width: 100%;
-  text-align: left;
+  justify-content: center;
   font: inherit;
   color: var(--fg-dim);
   border: none;
-  border-top: 1px solid var(--line);
   background: transparent;
-  padding: calc(var(--row) / 2) 2ch;
+  padding: 0.35rem 0.5rem;
   cursor: pointer;
+  border-radius: var(--radius-pill);
 }
 
 .cvl-settings:hover {
@@ -312,14 +309,6 @@ function projectNameOf(state: TaskState): string {
 }
 
 .cvl-settings-glyph {
-  flex: none;
   color: var(--fg-muted);
-}
-
-.cvl-settings-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 </style>

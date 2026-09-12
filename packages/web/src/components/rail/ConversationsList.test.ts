@@ -84,22 +84,32 @@ async function render(overrides: Partial<Props> = {}): Promise<string> {
   return renderToString(app)
 }
 
-describe('header: the kit rail head, a title and a + action', () => {
-  test('the title renders and the create action is a plain + button, no icon', async () => {
+describe('chrome: pill search with a quiet + action, no shouting title', () => {
+  test('the create action is a plain + in the search pill, no Agents title band', async () => {
     const html = await render()
-    expect(html).toContain('class="cvl-header rail-h"')
-    expect(html).toContain(t('conversations.title'))
+    expect(html).not.toContain('class="cvl-header rail-h"')
+    expect(html).not.toContain('>Agents<')
     expect(html).toContain(t('conversations.newAction'))
     expect(html).toContain('class="cvl-action"')
+    expect(html).toContain('class="cvl-search"')
     expect(html).not.toContain('lucide')
-    expect(html).not.toContain('btn')
   })
 
-  test('the action is the kit rail-h button: accent, borderless, no fill', () => {
+  test('the action is quiet, borderless, no fill of its own', () => {
     const block = SOURCE.slice(SOURCE.indexOf('.cvl-action {'), SOURCE.indexOf('.cvl-action:hover'))
-    expect(block).toContain('color: var(--accent);')
+    expect(block).toContain('color: var(--fg-dim);')
     expect(block).toContain('border: 0;')
     expect(block).not.toContain('background: var(')
+  })
+
+  test('the search capsule is a fully rounded pill', () => {
+    const rule = SOURCE.slice(
+      SOURCE.indexOf('.cvl-search {'),
+      SOURCE.indexOf('.cvl-search-glyph {'),
+    )
+    expect(rule).toContain('border-radius: var(--radius-pill);')
+    expect(rule).toContain('background: var(--bg-search);')
+    expect(rule).toContain('border: 0;')
   })
 
   test('no counter of any kind rides in the chrome', async () => {
@@ -109,10 +119,10 @@ describe('header: the kit rail head, a title and a + action', () => {
 })
 
 describe('search field: borderless, glyph-led, its right padding still COMPUTED', () => {
-  test('no query typed: no clear button, padding is the base clearance (36px, 0 icons)', async () => {
+  test('no query typed: no clear button, padding counts the + action (56px, 1 icon)', async () => {
     const html = await render()
     expect(html).not.toContain('cvl-search-clear')
-    expect(html).toContain('padding-right:36px')
+    expect(html).toContain('padding-right:56px')
   })
 
   test('placeholder text comes from i18n', async () => {
@@ -191,33 +201,36 @@ describe('flat list: a conversation is not a child of a project', () => {
     expect(SOURCE).toContain('project-name')
   })
 
-  test('the rail title/aria is Agents, via i18n', async () => {
+  test('the rail aria is Agents via i18n, without a visible title band', async () => {
     const html = await render()
     expect(t('conversations.title')).toBe('Agents')
     expect(html).toContain('aria-label="Agents"')
-    expect(html).toContain('>Agents<')
+    expect(html).not.toContain('>Agents<')
   })
 })
 
-describe('lines: one conversation, one inset line between two hairlines', () => {
-  test('a line is framed by a top hairline (and a bottom one on the last), inset from the rail edges', () => {
+describe('lines: selected fill, no hairline frames', () => {
+  test('a row is a soft fill selection with bubble radius, never hairlines', () => {
     const rule = SOURCE.slice(
       SOURCE.indexOf('.cvl-row-btn {'),
-      SOURCE.indexOf('.cvl-row-btn:hover {'),
+      SOURCE.indexOf('.cvl-row-btn--finished-start {'),
     )
-    expect(rule).toContain('border-top: 1px solid var(--line);')
-    expect(rule).toContain('.cvl-row-btn:last-child {\n  border-bottom: 1px solid var(--line);')
-    expect(rule).toContain('margin: 0 1ch;')
-    expect(rule).toContain('width: calc(100% - 2ch);')
+    expect(rule).toContain('border: none;')
+    expect(rule).toContain('border-radius: var(--radius-bubble);')
     expect(rule).toContain('background: transparent;')
-    expect(rule).not.toContain('border-radius')
+    expect(rule).not.toContain('border-top:')
     expect(rule).not.toContain('box-shadow')
+    const selected = SOURCE.slice(
+      SOURCE.indexOf('.cvl-row-btn--selected {'),
+      SOURCE.indexOf('.cvl-footer {'),
+    )
+    expect(selected).toContain('background: var(--bg-raised);')
   })
 
-  test('the list is spaced by text lines, never by a gap of pixels', () => {
+  test('the list uses soft padding, not terminal 1ch rhythm for chrome', () => {
     const rule = SOURCE.slice(SOURCE.indexOf('.cvl-list {'), SOURCE.indexOf('@container'))
-    expect(rule).toContain('padding: calc(var(--row) / 2) 0;')
-    expect(rule).not.toMatch(/padding:[^;]*\d+px/)
+    expect(rule).toContain('padding: 0.35rem 0.5rem;')
+    expect(rule).not.toContain('1ch')
   })
 })
 
@@ -261,7 +274,7 @@ describe('ordering: attention first, straight from the shared logic', () => {
       SOURCE.indexOf('.cvl-row-btn--finished-start {'),
       SOURCE.indexOf('.cvl-row-btn:hover {'),
     )
-    expect(rule).toContain('margin-top: calc(var(--row) / 2);')
+    expect(rule).toContain('margin-top: 0.5rem;')
     expect(rule).not.toContain('border-top: 2px')
   })
 
@@ -308,11 +321,11 @@ describe('selection: highlighted rows come from the focus deck, not a single sel
       SOURCE.indexOf('.cvl-row-btn--selected {'),
       SOURCE.indexOf('.cvl-footer {'),
     )
-    expect(rule).toContain('background: var(--bg-hover);')
+    expect(rule).toContain('background: var(--bg-raised);')
     expect(rule).not.toContain('border')
   })
 
-  test('hover is the same fill, nothing else', () => {
+  test('hover is a soft fill, nothing else', () => {
     const rule = SOURCE.slice(
       SOURCE.indexOf('.cvl-row-btn:hover {'),
       SOURCE.indexOf('.cvl-row-btn--selected {'),
@@ -334,7 +347,7 @@ describe('actions: the + emits create, a line emits select', () => {
 
 describe('root: no fixed width, occupies the parent slot', () => {
   test('the root style carries no width/min-width/max-width pixel values', () => {
-    const root = SOURCE.slice(SOURCE.indexOf('.cvl-root {'), SOURCE.indexOf('.cvl-header {'))
+    const root = SOURCE.slice(SOURCE.indexOf('.cvl-root {'), SOURCE.indexOf('.cvl-search {'))
     expect(root).not.toMatch(/\bwidth:\s*\d+px/)
     expect(root).not.toContain('min-width:')
     expect(root).not.toContain('max-width:')
@@ -360,7 +373,7 @@ describe('degradation thresholds: CSS-pinned, same values as the sheet', () => {
   })
 
   test('the container is self-named on the panel root, matching what the queries above target', () => {
-    const root = SOURCE.slice(SOURCE.indexOf('.cvl-root {'), SOURCE.indexOf('.cvl-header {'))
+    const root = SOURCE.slice(SOURCE.indexOf('.cvl-root {'), SOURCE.indexOf('.cvl-search {'))
     expect(root).toContain('container-type: inline-size;')
     expect(root).toContain('container-name: cvl-shell;')
   })

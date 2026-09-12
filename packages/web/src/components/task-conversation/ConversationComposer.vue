@@ -91,8 +91,7 @@ const canSend = (): boolean => props.draft.trim() !== ''
       :data-mode="composerMode()"
       @submit.prevent="emit('send')"
     >
-      <!-- One frame: the prompt glyph, the field, and the send that appears
-           only once there is something to send. -->
+      <!-- Capsule: quiet glyph, borderless field, send only once there is text. -->
       <div class="cv-reply-field">
         <span class="cv-reply-prompt" aria-hidden="true">{{ G.arrow }}</span>
         <textarea
@@ -109,7 +108,6 @@ const canSend = (): boolean => props.draft.trim() !== ''
           {{ mode === 'queue' ? t('workspace.replyQueueSend') : t('workspace.replySend') }}
         </button>
       </div>
-      <p class="cv-reply-hint hint">{{ t('composer.hintSend') }}</p>
     </form>
     <p v-else class="cv-reply-dead composer" data-mode="dead">
       {{ t('workspace.replyDeadHint') }}
@@ -120,12 +118,17 @@ const canSend = (): boolean => props.draft.trim() !== ''
 <style scoped>
 .cv-composer {
   flex: none;
+  padding: 0.65rem 1rem 1rem;
+  max-width: 720px;
+  width: 100%;
+  margin-inline: auto;
 }
 
 /* A parked message is not a state the reader must act on: plain meta text. */
 .cv-pending {
   align-items: baseline;
   gap: 1ch;
+  margin-bottom: 0.5rem;
 }
 
 .cv-pending-label {
@@ -148,31 +151,34 @@ const canSend = (): boolean => props.draft.trim() !== ''
   display: block;
   padding: 0;
   border-top: none;
+  background: transparent;
 }
 
-/* The frame: one hairline box around the prompt, the field and the send. */
+/* Capsule bar: fully rounded, no 1px square frame. */
 .cv-reply-field {
   display: flex;
-  align-items: flex-start;
-  gap: 1ch;
+  align-items: flex-end;
+  gap: 0.75rem;
   min-width: 0;
-  border: 1px solid var(--line);
-  background: var(--bg-raised);
-  padding: calc(var(--row) / 2) 1.5ch;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--bg-search);
+  padding: 0.7rem 1rem;
 }
 
 .cv-reply-field:focus-within {
-  border-color: var(--fg-dim);
+  background: var(--bg-raised);
 }
 
-/* Amber only here: an open question is the one thing blocking the agent. */
-.cv-reply[data-mode='question'] .cv-reply-field {
-  border-color: var(--warn);
+/* Amber prompt when a question blocks the agent — still no square border. */
+.cv-reply[data-mode='question'] .cv-reply-prompt {
+  color: var(--warn);
 }
 
 .cv-reply-prompt {
   flex: none;
   color: var(--fg-muted);
+  align-self: center;
 }
 
 .cv-reply-field .cv-reply-input {
@@ -184,6 +190,7 @@ const canSend = (): boolean => props.draft.trim() !== ''
   outline: none;
   background: transparent;
   padding: 0;
+  border-radius: 0;
 }
 
 .cv-reply-input::placeholder {
@@ -192,22 +199,22 @@ const canSend = (): boolean => props.draft.trim() !== ''
 
 .cv-reply-send {
   flex: none;
-  align-self: flex-end;
+  align-self: center;
+  border-radius: var(--radius-pill);
 }
 
 .cv-reply-send.btn.primary {
   background: var(--fg);
   border-color: var(--fg);
   color: var(--bg);
-}
-
-.cv-reply-hint {
-  margin: 0;
-  padding: 2px 1ch 0;
+  border-radius: var(--radius-pill);
 }
 
 .cv-reply-dead {
   margin: 0;
   display: block;
+  padding: 0.7rem 1rem;
+  border-radius: var(--radius-pill);
+  background: var(--bg-search);
 }
 </style>

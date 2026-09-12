@@ -310,8 +310,8 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  border-bottom: 1px solid var(--line);
-  padding: calc(var(--row) / 4) 0;
+  border-bottom: 0;
+  padding: calc(var(--row) / 2) 1rem;
 }
 
 .cv-conv-h {

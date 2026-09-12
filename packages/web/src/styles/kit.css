@@ -470,15 +470,16 @@ button.cell[aria-pressed='true'] {
 
 .shell {
   display: grid;
-  grid-template-columns: 30ch 1fr;
-  border: 1px solid var(--line);
+  grid-template-columns: 18rem 1fr;
+  border: 0;
   border-top: 0;
 }
 
 .rail {
-  border-right: 1px solid var(--line);
+  border-right: 0;
   display: flex;
   flex-direction: column;
+  background: var(--bg);
 }
 
 .rail-h {
@@ -488,8 +489,8 @@ button.cell[aria-pressed='true'] {
   height: calc(var(--row) + 4px);
   padding: 0 1ch 0 2ch;
   color: var(--fg-dim);
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
+  border-bottom: 0;
+  background: var(--bg);
 }
 
 .rail-h button {
@@ -717,7 +718,7 @@ button.cell[aria-pressed='true'] {
   grid-template-columns: 1fr auto;
   gap: 1ch;
   padding: 2px 1ch;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 0;
 }
 
 .conv-h .chips {
@@ -740,8 +741,11 @@ button.cell[aria-pressed='true'] {
 .thread {
   display: flex;
   flex-direction: column;
-  gap: calc(var(--row) * 1.25);
-  padding: var(--row) 2ch;
+  gap: calc(var(--row) * 1.5);
+  padding: calc(var(--row) * 1.25) 2rem;
+  max-width: 720px;
+  width: 100%;
+  margin-inline: auto;
   max-height: calc(var(--row) * 26);
   overflow: auto;
 }
@@ -774,10 +778,11 @@ button.cell[aria-pressed='true'] {
 
 .msg.user .body {
   color: var(--fg);
-  background: var(--bg-raised);
+  background: var(--bg-bubble);
   border: 0;
   outline: none;
-  padding: calc(var(--row) / 2) 2ch;
+  border-radius: var(--radius-bubble);
+  padding: calc(var(--row) / 2) 1.25rem;
   max-width: 72ch;
   width: fit-content;
 }
@@ -889,7 +894,7 @@ button.cell[aria-pressed='true'] {
   justify-content: space-between;
   gap: 2ch;
   padding: 2px 1ch;
-  border-top: 1px solid var(--line);
+  border-top: 0;
   color: var(--fg-dim);
 }
 
@@ -905,8 +910,8 @@ button.cell[aria-pressed='true'] {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 1ch;
-  padding: calc(var(--row) / 2) 1ch;
-  border-top: 1px solid var(--line);
+  padding: calc(var(--row) / 2) 1rem;
+  border-top: 0;
   background: var(--bg);
 }
 
@@ -915,6 +920,9 @@ button.cell[aria-pressed='true'] {
   width: 100%;
   resize: vertical;
   min-height: calc(var(--row) * 2);
+  border: 0;
+  background: transparent;
+  border-radius: 0;
 }
 
 .composer[data-mode='question'] textarea {
@@ -926,6 +934,7 @@ button.cell[aria-pressed='true'] {
 }
 
 .composer .hint {
+  display: none;
   grid-column: 1 / -1;
   color: var(--fg-muted);
   font-size: 12px;

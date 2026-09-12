@@ -68,16 +68,17 @@ async function render(state: TaskState, projectName = 'codesema-tools'): Promise
   return renderToString(app)
 }
 
-describe('one agent session is one line: status, role name, timestamp', () => {
-  test('the line is the status dot, the project role name, the timestamp', async () => {
+describe('one agent session is one row: avatar, role name, activity, timestamp', () => {
+  test('the row is the avatar, the project role name, the activity snippet, the timestamp', async () => {
     const html = await render(
       taskState({ title: 'fix the retry loop', branch: 'codesema/task-fix-the-retry-loop' }),
       'codesema-tools',
     )
     expect(html).toContain('codesema-tools')
     expect(html).not.toContain('fix the retry loop')
-    expect(html).toContain('class="cvr-dot status"')
+    expect(html).toContain('class="cvr-avatar"')
     expect(html).toContain('class="cvr-title"')
+    expect(html).toContain('class="cvr-snippet"')
     expect(html).toContain('class="cvr-age"')
   })
 
@@ -126,18 +127,31 @@ describe('one agent session is one line: status, role name, timestamp', () => {
     expect(shipped).toContain('data-finished="true"')
     expect(running).toContain('data-finished="false"')
   })
+
+  test('the muted second line is the status phrase, not the ticket title', async () => {
+    const html = await render(taskState({ status: 'running', title: 'secret title' }))
+    expect(html).toContain('cvr-snippet')
+    expect(html).toContain(t('workspace.phaseRunning'))
+    expect(html).not.toContain('secret title')
+  })
 })
 
-describe('nothing else is drawn: no card, no pill, no meta line', () => {
-  test('the row has no card, no border, no background of its own', () => {
-    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-title {'))
+describe('shape: circular avatar, two lines, no card chrome', () => {
+  test('the root has no card border or background of its own', () => {
+    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-avatar {'))
     expect(rule).not.toContain('border')
     expect(rule).not.toContain('background')
     expect(rule).not.toContain('border-radius')
     expect(rule).not.toContain('box-shadow')
   })
 
-  test('no pill, no badge, no ticket chip, no lucide icon reaches the template', () => {
+  test('the avatar is a circular tone disc', () => {
+    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-avatar {'), SOURCE.indexOf('.cvr-main {'))
+    expect(rule).toContain('border-radius: var(--radius-pill);')
+    expect(rule).toContain('background: var(--tone, var(--fg-muted));')
+  })
+
+  test('no pill badge, no ticket chip, no lucide icon reaches the template', () => {
     expect(SOURCE).not.toContain('badge')
     expect(SOURCE).not.toContain('cvr-pill')
     expect(SOURCE).not.toContain('lucide')
@@ -146,12 +160,11 @@ describe('nothing else is drawn: no card, no pill, no meta line', () => {
     expect(SOURCE).not.toContain('resolveActivityLine')
   })
 
-  test('the line is the kit grid: status, title, age', () => {
-    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-title {'))
-    expect(rule).toContain('grid-template-columns: auto 1fr auto;')
-    expect(rule).toContain('gap: 1ch;')
-    expect(rule).toContain('align-items: baseline;')
-    expect(SOURCE).toContain('class="cvr-dot status"')
+  test('the layout is avatar + (name/time over snippet)', () => {
+    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-avatar {'))
+    expect(rule).toContain('grid-template-columns: auto 1fr;')
+    expect(SOURCE).toContain('class="cvr-avatar"')
+    expect(SOURCE).toContain('class="cvr-snippet"')
   })
 
   test('the role name is a single line, then ellipsis', () => {
@@ -175,14 +188,12 @@ describe('nothing else is drawn: no card, no pill, no meta line', () => {
     expect(SOURCE).not.toContain('opacity')
   })
 
-  test('the timestamp is muted, on its own tabular column, on the first line', () => {
-    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-age {'), SOURCE.length)
+  test('the timestamp is muted, tabular, on the first line', () => {
+    const rule = SOURCE.slice(SOURCE.indexOf('.cvr-age {'), SOURCE.indexOf('.cvr-snippet {'))
     expect(rule).toContain('color: var(--fg-muted);')
     expect(rule).toContain('font-size: 12px;')
     expect(rule).toContain('font-variant-numeric: tabular-nums;')
     expect(rule).toContain('white-space: nowrap;')
-    const root = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-title {'))
-    expect(root).toContain('align-items: baseline;')
   })
 
   test('no colour is spelled out: only theme tokens, never a plain hex', () => {
