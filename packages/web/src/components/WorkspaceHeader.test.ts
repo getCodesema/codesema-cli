@@ -232,12 +232,10 @@ describe('forgeUnavailableKey — the mapping the badge reads', () => {
 describe('the wiring, on the source that carries it', () => {
   const VIEW = readFileSync(join(import.meta.dir, 'WorkspaceView.vue'), 'utf8')
 
-  test('WorkspaceView passes the facts of the FILTERED project, not a fixed blob', () => {
-    // The prop is bound at all…
-    expect(VIEW).toContain(':workspace="headerWorkspace"')
-    // …and it follows the filter, so a degraded sibling is not hidden behind
-    // the launch repo's healthy answer.
-    expect(VIEW).toContain('isolationForProject(filter.value, projects.value, workspace.value)')
+  test('the 2-zone shell no longer mounts WorkspaceHeader as primary chrome', () => {
+    // Collapse (feat/ui-kit): noisy header left the stage; counters live elsewhere.
+    expect(VIEW).not.toContain('<WorkspaceHeader')
+    expect(VIEW).not.toContain(':workspace="headerWorkspace"')
   })
 })
 
