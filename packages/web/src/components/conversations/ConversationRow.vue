@@ -1,30 +1,34 @@
 <script setup lang="ts">
-// One conversation = ONE line of the rail: status dot, label (two lines at
-// most), timestamp on the first line. Tone comes from EXECUTION_STATUS. Pure
-// presentational, props in, nothing owned. The caller
-// (rail/ConversationsList.vue) wraps this in the clickable element and
-// decides what a click does.
+// Une session agent = UNE ligne du rail : pastille de statut, nom de RÔLE
+// (projet), horodatage. Jamais le titre du ticket ni la commande CLI.
 import { computed } from 'vue'
+import { agentRoleName } from '../../agent-label'
 import { queueSectionOf } from '../../composables/useTaskBoard'
 import type { TaskState } from '../../composables/useTasks'
-import { conversationLabel } from '../../conversation-label'
 import { EXECUTION_STATUS } from '../../execution-status'
+import { t } from '../../i18n'
 import { formatConversationTimestamp } from './ConversationsLogic'
 
 const props = defineProps<{
   state: TaskState
+  /** Nom du projet — identité du rôle (session) dans le rail. */
+  projectName: string
 }>()
 
 const visual = computed(() => EXECUTION_STATUS[props.state.record.status])
 const finished = computed(() => queueSectionOf(props.state.record.status) === 'done')
-const label = computed(() => conversationLabel(props.state.record))
+const label = computed(
+  () =>
+    agentRoleName({ projectName: props.projectName, record: props.state.record }) ??
+    t('workspace.agentLabel'),
+)
 const age = computed(() => formatConversationTimestamp(props.state.record.updated_at))
 </script>
 
 <template>
   <span class="cvr-root" :data-tone="visual.tone" :data-finished="finished">
     <span class="cvr-dot status" :data-tone="visual.tone" aria-hidden="true" />
-    <span class="cvr-title" :title="state.record.title">{{ label }}</span>
+    <span class="cvr-title" :title="label">{{ label }}</span>
     <span class="cvr-age">{{ age }}</span>
   </span>
 </template>
@@ -39,7 +43,6 @@ const age = computed(() => formatConversationTimestamp(props.state.record.update
   width: 100%;
 }
 
-/* Kit status dot: colour comes from data-tone / EXECUTION_STATUS, never a local hex. */
 .cvr-dot {
   flex: none;
   align-self: start;
@@ -47,20 +50,16 @@ const age = computed(() => formatConversationTimestamp(props.state.record.update
 }
 
 .cvr-dot::before {
-  /* The kit .status glyph; keep the cell itself from taking a word of width. */
   line-height: 1;
 }
 
-/* Two lines at most: the label wraps once, then cuts. The timestamp keeps
-   the first line's baseline, so it never drifts down with the second one. */
+/* Une seule ligne : le nom de rôle, puis coupe. */
 .cvr-title {
   min-width: 0;
   color: var(--fg);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cvr-root[data-finished='true'] .cvr-title {

@@ -763,12 +763,23 @@ button.cell[aria-pressed='true'] {
   overflow-wrap: anywhere;
 }
 
+/* User row: one full-width chat line, bubble pushed to the RIGHT. Bot `.msg`
+   rows keep the 4ch gutter grid above — only `.msg.user` opts out. */
+.msg.user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
 /* The one filled surface of the thread: what the reader typed. Nothing else
    here carries a background, a frame or a rail. */
 .msg.user .body {
   color: var(--fg);
   background: var(--bg-raised);
   padding: calc(var(--row) / 2) 2ch;
+  max-width: 72ch;
+  width: fit-content;
 }
 
 .msg.live .body::after {

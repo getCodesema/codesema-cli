@@ -138,6 +138,7 @@ describe('the desk is two sibling zones', () => {
   test('the list column shows only ConversationsList, with no category switch', () => {
     const column = SOURCE.slice(SOURCE.indexOf('<aside class="ws-list"'), stageAt)
     expect(column).toContain('<ConversationsList')
+    expect(column).toContain(':project-names')
     expect(column).not.toContain('<RepositoriesList')
     expect(column).not.toContain('<CodeReviewList')
     expect(column).not.toContain('railPrefs.category')

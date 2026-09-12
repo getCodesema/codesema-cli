@@ -90,6 +90,8 @@ type RenderOptions = {
   events?: TaskEvent[]
   checks?: TaskChecks | null
   liveLoadCap?: { occupied: number; max: number; queued: number; waitingForSlot: boolean } | null
+  liveMessages?: { seq: number; text: string }[]
+  liveText?: string
 }
 
 /** Server-renders one conversation to HTML. No DOM, no fetch, no timers. */
@@ -101,13 +103,16 @@ async function renderConversation(options: RenderOptions = {}): Promise<string> 
       projectId: 'p1',
       record: record(options.record),
       events: options.events ?? [],
-      liveText: '',
-      liveMessages: [],
+      liveText: options.liveText ?? '',
+      liveMessages: options.liveMessages ?? [],
       liveTokens: 0,
       liveLoadCap: options.liveLoadCap ?? null,
       checks: options.checks ?? null,
     },
     projectName: 'repo',
+    projectKind: 'repo',
+    repoProjects: [],
+    attach: ok,
     reply: ok,
     interrupt: ok,
     resume: ok,
@@ -370,12 +375,14 @@ const messageEvent: TaskEvent = {
   data: { text: 'done' },
 }
 
-describe('the header names the conversation, then quotes what was asked', () => {
-  test('the 18px title is the branch slug, the prompt sentence sits under it', async () => {
+describe('the header names the agent role, then folds what was asked', () => {
+  test('the title is the project role name, not the ticket or branch slug', async () => {
     const html = await renderConversation({
       record: { branch: 'codesema/task-rename-package', title: 'Rename nolyra to codesema' },
     })
-    expect(html).toContain('rename package')
+    expect(html).toContain('>repo<')
+    expect(html).not.toContain('>rename package<')
+    // The asked sentence stays folded behind the prompt toggle.
     expect(html).toContain('Rename nolyra to codesema')
   })
 })
@@ -477,5 +484,48 @@ describe('the composer is a frame with a prompt, and nothing else until you type
     expect(field).toContain('cv-reply-prompt')
     expect(field).not.toContain('cv-reply-send')
     expect(html).toContain(t('composer.hintSend'))
+  })
+})
+
+describe('live thinking is pinned above the composer, not mid-thread', () => {
+  test('a running turn shows the thinking strip between the scroll and the composer', async () => {
+    const html = await renderConversation({ record: { status: 'running' } })
+    expect(html).toContain('cv-thinking')
+    expect(html).toContain(t('workspace.evThinking'))
+    const scrollAt = html.indexOf('cv-scroll')
+    const thinkingAt = html.indexOf('cv-thinking')
+    const composerAt = html.indexOf('cv-composer')
+    expect(scrollAt).toBeGreaterThan(-1)
+    expect(thinkingAt).toBeGreaterThan(scrollAt)
+    expect(composerAt).toBeGreaterThan(thinkingAt)
+  })
+
+  test('when live bubbles stream, the pin says the agent is writing', async () => {
+    const html = await renderConversation({
+      record: { status: 'running' },
+      liveMessages: [{ seq: 1, text: 'working on it' }],
+    })
+    expect(html).toContain('working on it')
+    expect(html).toContain('cv-thinking')
+    const pin = html.slice(html.indexOf('cv-thinking'), html.indexOf('cv-composer'))
+    expect(pin).toContain(t('workspace.agentWriting'))
+    // Status is pinned under the journal, not mid-history with the bubble.
+    expect(html.indexOf('cv-thinking')).toBeGreaterThan(html.indexOf('working on it'))
+  })
+
+  test('an idle conversation has no thinking strip', async () => {
+    const html = await renderConversation({ record: { status: 'waiting_for_you' } })
+    expect(html).not.toContain('cv-thinking')
+  })
+
+  test('TaskEventUser and the following bot event are stacked as siblings, never a shared row', () => {
+    const thread = Bun.file(new URL('./task-conversation/ConversationThread.vue', import.meta.url))
+    // Source guard: user then event component are sequential siblings in the v-for.
+    return thread.text().then((source) => {
+      expect(source).toContain('<TaskEventUser v-if="item.prompt !== null"')
+      expect(source).toContain(':is="TASK_EVENT_COMPONENTS[item.event.type]"')
+      // No horizontal twin layout for user+bot.
+      expect(source).not.toContain('cv-turn-row')
+    })
   })
 })

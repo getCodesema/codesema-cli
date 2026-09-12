@@ -8,6 +8,7 @@
 // here: an irreversible action lives at the tail of the thread. The state is
 // carried by `data-tone`, never by an inline colour.
 import { computed, ref } from 'vue'
+import { agentRoleName } from '../../agent-label'
 import { conversationMeta } from '../../composables/useConversationMeta'
 import {
   reasonDetailText,
@@ -17,7 +18,6 @@ import {
   type FocusTabState,
 } from '../../composables/useTaskBoard'
 import type { ApiResult, TaskState } from '../../composables/useTasks'
-import { conversationLabel } from '../../conversation-label'
 import { EXECUTION_STATUS } from '../../execution-status'
 import { G } from '../../glyphs'
 import { t } from '../../i18n'
@@ -43,9 +43,12 @@ const props = defineProps<{
 const emit = defineEmits<{ 'pick-tab': [tab: FocusTab]; error: [message: string | null] }>()
 
 const record = computed(() => props.state.record)
-// The branch slug the agent chose makes a shorter, truer name than the free
-// -form title, which stays right below in full.
-const label = computed(() => conversationLabel(record.value))
+// Identité = rôle issu du projet (session agent), pas le titre du ticket.
+const label = computed(
+  () =>
+    agentRoleName({ projectName: props.projectName, record: record.value }) ??
+    t('workspace.agentLabel'),
+)
 const visual = computed(() => EXECUTION_STATUS[record.value.status])
 // A 'queued' task waiting for the MACHINE-wide cap gets its own phrase.
 const phraseKey = computed(() =>

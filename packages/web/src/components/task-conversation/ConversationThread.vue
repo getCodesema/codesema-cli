@@ -182,6 +182,8 @@ watch(
     <!-- Live stream of the agent's turn: one bubble per message it streamed,
          in order. Only the last one is in flight — the kit's `.msg.live`
          draws its blinking caret; the settled ones step back. -->
+    <!-- Live reply text stays in the journal; the thinking/writing STATUS
+         lives in the pinned strip above the composer (TaskConversation). -->
     <div
       v-for="(bubble, index) in liveBubbles"
       :key="bubble.seq"
@@ -190,9 +192,6 @@ watch(
     >
       <!-- eslint-disable-next-line vue/no-v-html — renderMarkdown escapes everything first -->
       <div class="cv-live-text body md" v-html="renderMarkdown(bubble.text)" />
-      <p v-if="index === liveBubbles.length - 1" class="cv-live-hint">
-        {{ t('workspace.agentWriting') }}
-      </p>
     </div>
 
     <!-- While 'reviewing' it is the review reading the diff, not the agent

@@ -249,3 +249,18 @@ describe('conversationMeta — what the line is built from', () => {
     }
   })
 })
+
+describe('the title names the agent role', () => {
+  test('the h1 is the project name, never the ticket title or branch slug', async () => {
+    const html = await renderHeader({
+      record: {
+        title: 'Add a hello markdown file',
+        branch: 'codesema/task-add-hello-markdown-file',
+      },
+    })
+    const title = html.slice(html.indexOf('cv-title'), html.indexOf('cv-actions'))
+    expect(title).toContain('codesema-bench')
+    expect(title).not.toContain('Add a hello markdown file')
+    expect(title).not.toContain('add hello markdown file')
+  })
+})

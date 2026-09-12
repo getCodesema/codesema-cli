@@ -1,9 +1,9 @@
 <script setup lang="ts">
-// Left column of the 2-zone workspace: conversations only (search, flat
-// list, + new). Theme picker and settings live in the footer so the old
-// category rail is not required. A conversation is NOT a child of a
-// project: one flat list of lines. Ordering and row rendering stay on
-// orderConversations/searchRightPadding and ConversationRow.vue.
+// Left column of the 2-zone workspace: agent sessions (search, flat list,
+// + new). Theme picker and settings live in the footer so the old category
+// rail is not required. One existing task/VM session = one agent row.
+// Ordering and row rendering stay on orderConversations/searchRightPadding
+// and ConversationRow.vue.
 import { computed, ref } from 'vue'
 import { matchesQuery, queueSectionOf } from '../../composables/useTaskBoard'
 import { taskKey, type TaskState } from '../../composables/useTasks'
@@ -19,6 +19,8 @@ const props = defineProps<{
    *  a DECK, not a single selection: several conversations can be pinned side
    *  by side, so a row is highlighted when its key is in this list. */
   focusedKeys: readonly string[]
+  /** Display names by project id — role identity for each agent row. */
+  projectNames: ReadonlyMap<string, string>
 }>()
 
 const emit = defineEmits<{
@@ -55,6 +57,10 @@ const firstFinishedKey = computed(() => {
 
 function isSelected(state: TaskState): boolean {
   return props.focusedKeys.includes(taskKey(state.projectId, state.record.id))
+}
+
+function projectNameOf(state: TaskState): string {
+  return props.projectNames.get(state.projectId) ?? state.projectId
 }
 </script>
 
@@ -115,7 +121,7 @@ function isSelected(state: TaskState): boolean {
           :aria-current="isSelected(state) ? 'true' : undefined"
           @click="emit('select', state)"
         >
-          <ConversationRow :state="state" />
+          <ConversationRow :state="state" :project-name="projectNameOf(state)" />
         </button>
       </div>
     </div>

@@ -200,6 +200,17 @@ watch([tab, () => record.value.review_ref], () => void syncDiffFindings())
 function onPreviewLoaded(preview: PreviewResult): void {
   diffCount.value = preview.diffStats.files
 }
+
+// Bandeau « réflexion » épinglé sous le fil, au-dessus du composer — jamais
+// au milieu de l'historique. Uniquement pendant un tour en cours.
+const thinkingPinned = computed(() => record.value.status === 'running')
+const thinkingLabel = computed(() => {
+  const last = state.value.liveMessages.at(-1)
+  if (last && last.text.trim().length > 0) {
+    return t('workspace.agentWriting')
+  }
+  return t('workspace.evThinking')
+})
 </script>
 
 <template>
@@ -238,6 +249,9 @@ function onPreviewLoaded(preview: PreviewResult): void {
         @pick="composer.sendQuickReply"
         @other="composer.prefillFix"
       />
+      <div v-if="thinkingPinned" class="cv-thinking strip" role="status">
+        <span class="cv-thinking-label status" data-tone="info">{{ thinkingLabel }}</span>
+      </div>
       <ConversationComposer
         ref="composerRef"
         :draft="composer.draft.value"
@@ -292,6 +306,15 @@ function onPreviewLoaded(preview: PreviewResult): void {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.cv-thinking {
+  flex: none;
+  align-items: center;
+}
+
+.cv-thinking-label {
+  color: var(--fg-dim);
 }
 
 .cv-diff {

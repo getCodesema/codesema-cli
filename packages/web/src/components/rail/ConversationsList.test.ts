@@ -63,10 +63,19 @@ function taskState(recordOverrides: Partial<TaskRecord> = {}, projectId = 'p1'):
 type Props = {
   states: TaskState[]
   focusedKeys: readonly string[]
+  projectNames: ReadonlyMap<string, string>
 }
 
 function props(overrides: Partial<Props> = {}): Props {
-  return { states: [], focusedKeys: [], ...overrides }
+  return {
+    states: [],
+    focusedKeys: [],
+    projectNames: new Map([
+      ['p1', 'codesema-tools'],
+      ['p2', 'other-repo'],
+    ]),
+    ...overrides,
+  }
 }
 
 async function render(overrides: Partial<Props> = {}): Promise<string> {
@@ -167,15 +176,26 @@ describe('flat list: a conversation is not a child of a project', () => {
     expect(html).not.toContain('aria-expanded')
   })
 
-  test('a conversation carrying no project renders like any other line', async () => {
-    const html = await render({ states: [taskState({ id: 'orphan', title: 'no project' }, '')] })
-    expect(html).toContain('no project')
+  test('a conversation carrying no project still renders a line (sober Agent fallback)', async () => {
+    const html = await render({
+      states: [taskState({ id: 'orphan', title: 'no project' }, '')],
+      projectNames: new Map(),
+    })
+    expect(html).toContain(t('workspace.agentLabel'))
+    expect(html).not.toContain('>no project<')
     expect((html.match(/cvl-row-btn/g) ?? []).length).toBe(1)
   })
 
-  test('the project name is never read here: no such prop, no such lookup', () => {
-    expect(SOURCE).not.toContain('projectNames')
-    expect(SOURCE).not.toContain('projectName')
+  test('projectNames feeds the row role identity', () => {
+    expect(SOURCE).toContain('projectNames')
+    expect(SOURCE).toContain('project-name')
+  })
+
+  test('the rail title/aria is Agents, via i18n', async () => {
+    const html = await render()
+    expect(t('conversations.title')).toBe('Agents')
+    expect(html).toContain('aria-label="Agents"')
+    expect(html).toContain('>Agents<')
   })
 })
 
@@ -208,17 +228,24 @@ describe('ordering: attention first, straight from the shared logic', () => {
   })
 
   test('waiting, then running, then queued, then finished', async () => {
+    // Distinct project role names — titles no longer appear in the row.
     const html = await render({
       states: [
-        taskState({ id: 'd', title: 'shipped one', status: 'shipped' }, 'p1'),
-        taskState({ id: 'c', title: 'queued one', status: 'queued' }, 'p1'),
-        taskState({ id: 'b', title: 'running one', status: 'running' }, 'p1'),
-        taskState({ id: 'a', title: 'waiting one', status: 'waiting_for_you' }, 'p1'),
+        taskState({ id: 'd', status: 'shipped' }, 'shipped-proj'),
+        taskState({ id: 'c', status: 'queued' }, 'queued-proj'),
+        taskState({ id: 'b', status: 'running' }, 'running-proj'),
+        taskState({ id: 'a', status: 'waiting_for_you' }, 'waiting-proj'),
       ],
+      projectNames: new Map([
+        ['waiting-proj', 'waiting-role'],
+        ['running-proj', 'running-role'],
+        ['queued-proj', 'queued-role'],
+        ['shipped-proj', 'shipped-role'],
+      ]),
     })
-    expect(html.indexOf('waiting one')).toBeLessThan(html.indexOf('running one'))
-    expect(html.indexOf('running one')).toBeLessThan(html.indexOf('shipped one'))
-    expect(html.indexOf('queued one')).toBeLessThan(html.indexOf('shipped one'))
+    expect(html.indexOf('waiting-role')).toBeLessThan(html.indexOf('running-role'))
+    expect(html.indexOf('running-role')).toBeLessThan(html.indexOf('shipped-role'))
+    expect(html.indexOf('queued-role')).toBeLessThan(html.indexOf('shipped-role'))
   })
 
   test('the finished pile opens on a single break, never a titled section', async () => {

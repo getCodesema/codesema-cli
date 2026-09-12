@@ -799,12 +799,12 @@ const en = {
   'conversation.dangerZone': 'Danger zone',
 
   // --- Conversations column: header, search, activity line, reference pills ---
-  'conversations.title': 'Conversations',
-  'conversations.newAction': 'New conversation',
-  'conversations.searchPlaceholder': 'Search conversations…',
+  'conversations.title': 'Agents',
+  'conversations.newAction': 'New agent',
+  'conversations.searchPlaceholder': 'Search agents…',
   'conversations.searchClear': 'Clear the search',
-  'conversations.empty': 'No conversation yet.',
-  'conversations.searchEmpty': 'No conversation matches this search.',
+  'conversations.empty': 'No agent yet.',
+  'conversations.searchEmpty': 'No agent matches this search.',
 
   // --- Navigation rail: two categories, a list column, a pinned footer ---
   'rail.conversations': 'Conversation',
@@ -1650,12 +1650,12 @@ const fr: Record<MessageKey, string> = {
   'conversation.dangerZone': 'Zone de danger',
 
   // --- Colonne des conversations ---
-  'conversations.title': 'Conversations',
-  'conversations.newAction': 'Nouvelle conversation',
-  'conversations.searchPlaceholder': 'Rechercher une conversation…',
+  'conversations.title': 'Agents',
+  'conversations.newAction': 'Nouvel agent',
+  'conversations.searchPlaceholder': 'Rechercher un agent…',
   'conversations.searchClear': 'Effacer la recherche',
-  'conversations.empty': 'Aucune conversation pour le moment.',
-  'conversations.searchEmpty': 'Aucune conversation ne correspond à cette recherche.',
+  'conversations.empty': 'Aucun agent pour le moment.',
+  'conversations.searchEmpty': 'Aucun agent ne correspond à cette recherche.',
 
   // --- Navigation rail: two categories, a list column, a pinned footer ---
   'rail.conversations': 'Conversation',

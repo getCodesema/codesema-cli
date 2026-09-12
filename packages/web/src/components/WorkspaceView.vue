@@ -790,6 +790,7 @@ watch(
           ref="conversationsList"
           :states="queueStates"
           :focused-keys="focusedKeys"
+          :project-names="projectNameById"
           @select="(state) => openConversation(state.projectId, state.record.id)"
           @create="onNewConversation"
           @settings="toggleSettings"

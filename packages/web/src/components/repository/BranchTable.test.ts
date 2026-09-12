@@ -279,18 +279,24 @@ describe('BranchTable: conversations badge', () => {
 })
 
 describe('BranchTable: expanded row', () => {
-  test('collapsed by default: the conversation title is absent', async () => {
+  test('collapsed by default: the agent row is absent', async () => {
     const rows = [
       branchRow({
         name: 'feature-x',
         conversations: [state('repo-a', { id: 't1', status: 'running', title: 'Fix the bug' })],
       }),
     ]
-    const html = await render({ rows, visibleRows: rows, expanded: new Set() })
+    const html = await render({
+      rows,
+      visibleRows: rows,
+      expanded: new Set(),
+      projectNames: new Map([['repo-a', 'repo-a']]),
+    })
+    expect(html).not.toContain('class="cvr-title"')
     expect(html).not.toContain('Fix the bug')
   })
 
-  test('expanding the row via its key reveals its conversations', async () => {
+  test('expanding the row via its key reveals its agent sessions', async () => {
     const row = branchRow({
       name: 'feature-x',
       conversations: [state('repo-a', { id: 't1', status: 'running', title: 'Fix the bug' })],
@@ -299,8 +305,12 @@ describe('BranchTable: expanded row', () => {
       rows: [row],
       visibleRows: [row],
       expanded: new Set([branchRowKey(row)]),
+      projectNames: new Map([['repo-a', 'repo-a']]),
     })
-    expect(html).toContain('Fix the bug')
+    // Role identity = project name, never the ticket title.
+    expect(html).toContain('repo-a')
+    expect(html).toContain('class="cvr-title"')
+    expect(html).not.toContain('Fix the bug')
   })
 
   test('an expanded branch with no conversation shows the empty hint', async () => {

@@ -11,6 +11,7 @@ import { createSSRApp } from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import type { TaskState } from '../../composables/useTasks'
+import { t } from '../../i18n'
 import type { TaskRecord } from '../../types'
 
 Bun.plugin({
@@ -61,41 +62,54 @@ function taskState(recordOverrides: Partial<TaskRecord> = {}): TaskState {
   }
 }
 
-async function render(state: TaskState): Promise<string> {
+async function render(state: TaskState, projectName = 'codesema-tools'): Promise<string> {
   const ConversationRow = (await import('./ConversationRow.vue')).default
-  const app = createSSRApp(ConversationRow, { state })
+  const app = createSSRApp(ConversationRow, { state, projectName })
   return renderToString(app)
 }
 
-describe('one conversation is one line: status, label, timestamp', () => {
-  test('the line is the status dot, the conversation label, the timestamp', async () => {
+describe('one agent session is one line: status, role name, timestamp', () => {
+  test('the line is the status dot, the project role name, the timestamp', async () => {
     const html = await render(
       taskState({ title: 'fix the retry loop', branch: 'codesema/task-fix-the-retry-loop' }),
+      'codesema-tools',
     )
-    expect(html).toContain('fix the retry loop')
+    expect(html).toContain('codesema-tools')
+    expect(html).not.toContain('fix the retry loop')
     expect(html).toContain('class="cvr-dot status"')
     expect(html).toContain('class="cvr-title"')
     expect(html).toContain('class="cvr-age"')
   })
 
-  test('the label is the shared resolver: an agent-named branch, read as words', async () => {
+  test('the identity is the project role, never conversationLabel / ticket title', async () => {
     const html = await render(
       taskState({ title: 'a very long free-form title', branch: 'codesema/task-retry-the-push-2' }),
+      'bench',
     )
-    expect(html).toContain('retry the push')
-    expect(html).not.toContain('>a very long free-form title<')
+    expect(html).toContain('bench')
+    expect(html).not.toContain('retry the push')
+    expect(html).not.toContain('a very long free-form title')
   })
 
-  test('a branch the agent never named falls back to the title', async () => {
-    const html = await render(taskState({ title: 'manual work', branch: 'develop' }))
-    expect(html).toContain('manual work')
-  })
-
-  test('the full title stays reachable on hover, whatever the label shows', async () => {
+  test('never shows the CLI agent command as the row identity', async () => {
     const html = await render(
-      taskState({ title: 'the whole untruncated title', branch: 'codesema/task-short-one' }),
+      taskState({ agent: 'claude -p --dangerously-skip-permissions', title: 'do stuff' }),
+      'my-repo',
     )
-    expect(html).toContain('title="the whole untruncated title"')
+    expect(html).toContain('my-repo')
+    expect(html).not.toContain('claude')
+    expect(html).not.toContain('do stuff')
+  })
+
+  test('an empty project name falls back to the sober Agent label', async () => {
+    const html = await render(taskState({ title: 'manual work' }), '')
+    expect(html).toContain(t('workspace.agentLabel'))
+    expect(html).not.toContain('manual work')
+  })
+
+  test('the role name stays reachable on hover', async () => {
+    const html = await render(taskState({ title: 'the whole untruncated title' }), 'codesema-tools')
+    expect(html).toContain('title="codesema-tools"')
   })
 
   test('the tone comes from the one status table, never from an inline style', async () => {
@@ -140,15 +154,15 @@ describe('nothing else is drawn: no card, no pill, no meta line', () => {
     expect(SOURCE).toContain('class="cvr-dot status"')
   })
 
-  test('the label runs over two lines at most, then cuts', () => {
+  test('the role name is a single line, then ellipsis', () => {
     const rule = SOURCE.slice(
       SOURCE.indexOf('.cvr-title {'),
       SOURCE.indexOf(".cvr-root[data-finished='true']"),
     )
-    expect(rule).toContain('-webkit-line-clamp: 2;')
-    expect(rule).toContain('-webkit-box-orient: vertical;')
+    expect(rule).toContain('white-space: nowrap;')
+    expect(rule).toContain('text-overflow: ellipsis;')
     expect(rule).toContain('overflow: hidden;')
-    expect(rule).not.toContain('white-space: nowrap;')
+    expect(rule).not.toContain('-webkit-line-clamp')
     expect(rule).toContain('color: var(--fg);')
   })
 
@@ -167,8 +181,6 @@ describe('nothing else is drawn: no card, no pill, no meta line', () => {
     expect(rule).toContain('font-size: 12px;')
     expect(rule).toContain('font-variant-numeric: tabular-nums;')
     expect(rule).toContain('white-space: nowrap;')
-    // The first line is where it sits: the grid aligns both cells on the
-    // baseline, which is the FIRST line box of a clamped label.
     const root = SOURCE.slice(SOURCE.indexOf('.cvr-root {'), SOURCE.indexOf('.cvr-title {'))
     expect(root).toContain('align-items: baseline;')
   })
