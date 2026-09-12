@@ -40,12 +40,14 @@ describe('the draft column keeps what it already showed (T2.6 IV.3)', () => {
   test('the warning and the chips sit OUTSIDE the composer, before it', () => {
     const warningAt = SOURCE.indexOf('ws-draft-warning')
     const chipsAt = SOURCE.indexOf('ws-draft-chips')
-    const composerAt = SOURCE.indexOf('<TaskComposer')
+    // Fork/work-on TaskComposer (second instance): scratch capsule comes first.
+    const composers = [...SOURCE.matchAll(/<TaskComposer/g)].map((m) => m.index ?? -1)
     expect(warningAt).toBeGreaterThan(-1)
     expect(chipsAt).toBeGreaterThan(-1)
-    expect(composerAt).toBeGreaterThan(-1)
-    expect(warningAt).toBeLessThan(composerAt)
-    expect(chipsAt).toBeLessThan(composerAt)
+    expect(composers.length).toBeGreaterThanOrEqual(2)
+    const forkComposerAt = composers[1]!
+    expect(warningAt).toBeLessThan(forkComposerAt)
+    expect(chipsAt).toBeLessThan(forkComposerAt)
   })
 })
 
@@ -340,31 +342,41 @@ describe('a new conversation never targets a repository', () => {
   })
 })
 
-// The scratch draft targets no branch: the column must not claim otherwise.
-// TaskComposer.test.ts covers what it shows INSTEAD (the sober notice); what
-// is pinned here is that the branch-only chrome around it is gone.
-describe('a scratch draft shows no branch/base chrome', () => {
-  const draftColumn = SOURCE.slice(
-    SOURCE.indexOf('<header class="ws-draft-head">'),
-    SOURCE.indexOf('<TaskComposer'),
+// Scratch "+" is empty 1:1 chat chrome (Grok Nouveau Bot), not a middle card.
+// Fork/work-on still keep modes / trunk warning / chips — logic retained.
+describe('a scratch draft is empty 1:1 chat chrome, not a middle card', () => {
+  const scratchBlock = SOURCE.slice(
+    SOURCE.indexOf('class="ws-scratch-head"') - 80,
+    SOURCE.indexOf('v-else class="ws-draft-wrap"'),
+  )
+  const forkBlock = SOURCE.slice(
+    SOURCE.indexOf('v-else class="ws-draft-wrap"'),
+    SOURCE.indexOf('<!-- A repository'),
   )
 
-  // Gated on the DRAFT's own mode, not on the project's kind: the two used
-  // to be kept in step by hand, and the mode is the fact that decides what
-  // the panel can honestly show.
-  test('the title falls back to a plain, branchless title for a scratch draft', () => {
-    expect(draftColumn).toContain("draftEntry.draft.mode === 'scratch'")
-    expect(draftColumn).toContain("t('workspace.draftScratchTitle')")
-    // Checked first, ahead of the fork/work-on ternary it replaces.
-    expect(draftColumn.indexOf("draftEntry.draft.mode === 'scratch'")).toBeLessThan(
-      draftColumn.indexOf("draftEntry.draft.mode === 'fork'"),
-    )
+  test('scratch renders thin header + empty stage + bottom capsule, no ws-draft card', () => {
+    expect(scratchBlock).toContain('ws-scratch-head')
+    expect(scratchBlock).toContain('ws-scratch-body')
+    expect(scratchBlock).toContain('ws-scratch-composer')
+    expect(scratchBlock).toContain("t('workspace.draftScratchTitle')")
+    expect(scratchBlock).toContain('capsule')
+    expect(scratchBlock).not.toContain('ws-draft-modes')
+    expect(scratchBlock).not.toContain('ws-draft-warning')
+    expect(scratchBlock).not.toContain('class="ws-draft"')
   })
 
-  test('the fork/work-on mode toggle and the branch/target chips are both hidden for it', () => {
-    expect(draftColumn.split(`v-if="draftEntry.draft.mode !== 'scratch'"`).length - 1).toBe(2)
-    expect(draftColumn).toContain('ws-draft-modes')
-    expect(draftColumn).toContain('ws-draft-chips')
+  test('fork/work-on keep modes, trunk warning and chips (logic retained)', () => {
+    expect(forkBlock).toContain('ws-draft-modes')
+    expect(forkBlock).toContain('ws-draft-chips')
+    expect(forkBlock).toContain('ws-draft-warning')
+    expect(forkBlock).toContain('isTrunkBranch(draftEntry.draft.branch)')
+    expect(SOURCE).toContain('workspace.draftTrunkWarning')
+  })
+
+  test('scratch also appears as a selected Agents list row', () => {
+    expect(SOURCE).toContain(':draft-row="scratchListRow"')
+    expect(SOURCE).toContain('@focus-draft="onFocusScratchDraft"')
+    expect(SOURCE).toContain('scratchListRow')
   })
 
   test('the composer is told which project kind it is drafting for', () => {

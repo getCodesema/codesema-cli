@@ -110,6 +110,8 @@ describe('chrome: pill search with a quiet + action, no shouting title', () => {
     expect(rule).toContain('border-radius: var(--radius-pill);')
     expect(rule).toContain('background: var(--bg-search);')
     expect(rule).toContain('border: 0;')
+    expect(rule).toContain('height: 36px;')
+    expect(rule).toContain('margin: 12px;')
   })
 
   test('no counter of any kind rides in the chrome', async () => {
@@ -167,7 +169,7 @@ describe('empty states: no conversation at all vs. a search matching nothing', (
   // itself already accepts for the identical reason; pinned on source instead.
   test('the no-match branch is wired to its own key, distinct from the empty-column one', () => {
     expect(SOURCE).toContain("t('conversations.searchEmpty')")
-    expect(SOURCE).toContain('v-else-if="isSearchEmpty"')
+    expect(SOURCE).toContain('v-else-if="isSearchEmpty && !draftRow"')
   })
 })
 
@@ -216,7 +218,7 @@ describe('lines: selected fill, no hairline frames', () => {
       SOURCE.indexOf('.cvl-row-btn--finished-start {'),
     )
     expect(rule).toContain('border: none;')
-    expect(rule).toContain('border-radius: var(--radius-bubble);')
+    expect(rule).toContain('border-radius: var(--radius-row);')
     expect(rule).toContain('background: transparent;')
     expect(rule).not.toContain('border-top:')
     expect(rule).not.toContain('box-shadow')
@@ -400,5 +402,14 @@ describe('imports: reuses ConversationsLogic.ts and ConversationRow.vue unmodifi
 
   test('ConversationRow is imported from the conversations directory', () => {
     expect(SOURCE).toContain("import ConversationRow from '../conversations/ConversationRow.vue'")
+  })
+})
+
+describe('scratch draft row: selected Agents line for "+" empty chat', () => {
+  test('an optional draftRow renders as a selected row above the task list', () => {
+    expect(SOURCE).toContain('draftRow')
+    expect(SOURCE).toContain("emit('focus-draft')")
+    expect(SOURCE).toContain('cvl-row-btn--selected')
+    expect(SOURCE).toContain('draftState')
   })
 })

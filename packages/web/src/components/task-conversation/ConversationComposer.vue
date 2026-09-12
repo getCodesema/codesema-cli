@@ -118,10 +118,11 @@ const canSend = (): boolean => props.draft.trim() !== ''
 <style scoped>
 .cv-composer {
   flex: none;
-  padding: 0.65rem 1rem 1rem;
+  padding: 0.65rem 1.25rem 1rem;
   max-width: 720px;
   width: 100%;
   margin-inline: auto;
+  box-sizing: border-box;
 }
 
 /* A parked message is not a state the reader must act on: plain meta text. */
@@ -157,13 +158,15 @@ const canSend = (): boolean => props.draft.trim() !== ''
 /* Capsule bar: fully rounded, no 1px square frame. */
 .cv-reply-field {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 0.75rem;
   min-width: 0;
+  min-height: 48px;
+  box-sizing: border-box;
   border: 0;
   border-radius: var(--radius-pill);
   background: var(--bg-search);
-  padding: 0.7rem 1rem;
+  padding: 0.55rem 1rem;
 }
 
 .cv-reply-field:focus-within {

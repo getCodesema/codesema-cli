@@ -52,8 +52,8 @@ const age = computed(() => formatConversationTimestamp(props.state.record.update
 
 .cvr-avatar {
   flex: none;
-  width: 1.65rem;
-  height: 1.65rem;
+  width: 30px;
+  height: 30px;
   margin-top: 0.1rem;
   border-radius: var(--radius-pill);
   background: var(--tone, var(--fg-muted));
@@ -78,6 +78,7 @@ const age = computed(() => formatConversationTimestamp(props.state.record.update
 .cvr-title {
   min-width: 0;
   color: var(--fg);
+  font-size: 14px;
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -99,7 +100,7 @@ const age = computed(() => formatConversationTimestamp(props.state.record.update
 .cvr-snippet {
   min-width: 0;
   color: var(--fg-dim);
-  font-size: 12px;
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

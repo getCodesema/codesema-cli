@@ -125,7 +125,7 @@ describe('TaskEventUser is a right-aligned chat bubble on its own row', () => {
 
   test('the kit fills the user prompt, and rails it no more', () => {
     expect(kitUserBody()).toContain('background: var(--bg-bubble);')
-    expect(kitUserBody()).toContain('padding: calc(var(--row) / 2) 1.25rem;')
+    expect(kitUserBody()).toContain('padding: 10px 16px;')
     // Explicit border: 0 is fine; a visible outline/box is not.
     expect(kitUserBody()).not.toMatch(/border:\s*1px/)
     expect(kitUserBody()).not.toContain('outline: 1px')
@@ -165,8 +165,8 @@ describe('TaskEventUser is a right-aligned chat bubble on its own row', () => {
   })
 
   test('width capped in characters', () => {
-    expect(style).toContain('max-width: 72ch;')
-    expect(kitUserBody()).toContain('max-width: 72ch;')
+    expect(style).toContain('max-width: 60%;')
+    expect(kitUserBody()).toContain('max-width: 60%;')
   })
 
   test('the bubble pins neither a size nor a line height: both inherit the kit', () => {

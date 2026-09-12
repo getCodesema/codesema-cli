@@ -1,16 +1,17 @@
 /* Ported verbatim from design/ui-kit.html. Palette and contrast are client-only:
    <html data-palette="…" data-contrast="aaa">, driven by src/theme.ts. */
 :root {
-  /* ---- tokens: Ink (default palette) — near-black chrome, little colour ---- */
-  --bg: #0a0a0a;
-  --bg-raised: #1c1c1c;
+  /* ---- tokens: Ink (default palette) — Grok photo 1:1 chrome ---- */
+  --bg: #000000; /* main stage */
+  --bg-rail: #0d0d0d; /* Agents sidebar */
+  --bg-raised: #1a1a1a; /* selected row / raised chrome */
   --bg-hover: #242424;
-  --bg-bubble: #2a2a2a; /* user message pills */
-  --bg-search: #1f1f1f; /* sidebar search / composer capsule fill */
+  --bg-bubble: #2f2f2f; /* user message pills */
+  --bg-search: #2a2a2a; /* search pill + composer capsule */
   --line: #2a2a2a;
-  --fg: #e8e8e8;
-  --fg-muted: #5a5a5a; /* decorative only: tree lines, #, disabled. Never text meant to be read */
-  --fg-dim: #9a9a9a; /* secondary text, AA >= 4.5 on --bg and --bg-raised */
+  --fg: #ececec; /* agent body text */
+  --fg-muted: #6b6b6b; /* timestamps */
+  --fg-dim: #8e8e8e; /* snippets / secondary */
   --accent: #d0d0d0; /* focus, links, primary action — almost white/gray */
   --ok: #9ece6a;
   --warn: #e0af68;
@@ -25,7 +26,8 @@
   --u: 1ch;
   --row: calc(var(--fs) * var(--lh));
   --radius-pill: 999px;
-  --radius-bubble: 18px;
+  --radius-bubble: 18px; /* user bubbles 16–20 */
+  --radius-row: 12px; /* selected Agents row */
 }
 /* AAA variant (>= 7:1 on --bg and --bg-raised): same hues, lightened */
 :root[data-contrast='aaa'] {

@@ -33,7 +33,7 @@ const exact = computed(() => (props.at ? formatExactStamp(props.at) : undefined)
 
 .tvu-block {
   /* La surface vient du kit ; ici seulement le flux markdown. */
-  max-width: 72ch;
+  max-width: 60%;
   width: fit-content;
 }
 
@@ -44,7 +44,7 @@ const exact = computed(() => (props.at ? formatExactStamp(props.at) : undefined)
 
 .tvu-root .tvu-bubble {
   margin: 0;
-  max-width: 72ch;
+  max-width: 60%;
   color: var(--fg);
   overflow-wrap: anywhere;
   min-width: 0;

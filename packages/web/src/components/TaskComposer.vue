@@ -33,6 +33,8 @@ const props = defineProps<{
   error: string | null
   /** Embedded in a draft column: the column is the card, drop the chrome. */
   compact?: boolean
+  /** Scratch empty-chat chrome: bottom capsule only, no plan panel / middle card. */
+  capsule?: boolean
   agents?: readonly AgentOption[]
   currentAgent?: string
   isolation?: TaskIsolation | null
@@ -263,15 +265,33 @@ defineExpose({ reset })
 </script>
 
 <template>
-  <form class="tc-root composer" :class="{ 'tc-root--compact': compact }" @submit.prevent="submit">
+  <form
+    class="tc-root composer"
+    :class="{ 'tc-root--compact': compact, 'tc-root--capsule': capsule }"
+    @submit.prevent="submit"
+  >
+    <div v-if="capsule" class="tc-capsule-field">
+      <span class="tc-capsule-plus" aria-hidden="true">+</span>
+      <textarea
+        v-model="prompt"
+        class="tc-input"
+        rows="1"
+        :placeholder="t('workspace.composerPlaceholder')"
+        @keydown.enter="(e) => (e.metaKey || e.ctrlKey) && submit()"
+      />
+      <button class="tc-launch btn primary" type="submit" :disabled="creating || !prompt.trim()">
+        <span aria-hidden="true">{{ G.retry }}</span>
+      </button>
+    </div>
     <textarea
+      v-else
       v-model="prompt"
       class="tc-input"
       rows="3"
       :placeholder="t('workspace.composerPlaceholder')"
       @keydown.enter="(e) => (e.metaKey || e.ctrlKey) && submit()"
     />
-    <div class="tc-row">
+    <div v-if="!capsule" class="tc-row">
       <label v-if="showPicker" class="tc-agent">
         <span>{{ t('workspace.agentLabel') }}</span>
         <select v-model="selectedId" class="tc-agent-select">
@@ -300,13 +320,13 @@ defineExpose({ reset })
         }}<span class="key" aria-hidden="true">^{{ G.reply }}</span>
       </button>
     </div>
-    <p v-if="showBuildHint" class="tc-hint hint">{{ t('workspace.agentBuildHint') }}</p>
+    <p v-if="showBuildHint && !capsule" class="tc-hint hint">{{ t('workspace.agentBuildHint') }}</p>
     <p v-if="error" class="tc-error live err">{{ t('workspace.createError') }} ({{ error }})</p>
 
     <!-- T2.6: what WILL be created, and the one field that changes it. Only
          inside a draft column — the standalone queue composer targets no
          branch, so it has no plan to show. -->
-    <section v-if="draft" class="tc-plan plan">
+    <section v-if="draft && !capsule" class="tc-plan plan">
       <h3 class="tc-plan-title">{{ t('workspace.planTitle') }}</h3>
       <!-- No repository: no branch is ever forked, so neither the retarget
            field nor a plan would describe anything real. -->
@@ -369,6 +389,44 @@ defineExpose({ reset })
   border-radius: var(--radius-bubble);
   padding: 0.85rem 1rem;
   background: var(--bg-search);
+}
+
+/* Scratch empty chat: single 48–52px capsule, no raised card chrome. */
+.tc-root--capsule {
+  display: block;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--bg-search);
+  padding: 0;
+  min-height: 48px;
+}
+
+.tc-capsule-field {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  min-height: 48px;
+  box-sizing: border-box;
+  padding: 0 1rem;
+}
+
+.tc-capsule-plus {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.tc-root--capsule .tc-input {
+  min-height: 0;
+  height: 24px;
+  resize: none;
+}
+
+.tc-root--capsule .tc-launch {
+  margin-left: 0;
+  padding: 0.35rem 0.65rem;
 }
 
 .tc-input {

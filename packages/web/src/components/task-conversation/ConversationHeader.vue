@@ -309,9 +309,12 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
   flex: none;
   display: flex;
   flex-direction: column;
+  justify-content: center;
+  min-height: 48px;
+  box-sizing: border-box;
   background: var(--bg);
   border-bottom: 0;
-  padding: calc(var(--row) / 2) 1rem;
+  padding: 0 1rem;
 }
 
 .cv-conv-h {
@@ -320,8 +323,8 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
 
 .cv-title-row {
   display: flex;
-  align-items: baseline;
-  gap: 1ch;
+  align-items: center;
+  gap: 0.75rem;
   min-width: 0;
 }
 
@@ -334,7 +337,7 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
 
 .cv-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--fg);
   min-width: 0;

@@ -52,7 +52,7 @@ describe('shape', () => {
       offenders((file) =>
         (styleOf(file).match(/border-radius:\s*[^;]+;/g) ?? []).some(
           (declaration) =>
-            !/border-radius:\s*(0|var\(--radius-pill\)|var\(--radius-bubble\))\s*;/.test(
+            !/border-radius:\s*(0|var\(--radius-pill\)|var\(--radius-bubble\)|var\(--radius-row\))\s*;/.test(
               declaration,
             ),
         ),
@@ -65,7 +65,7 @@ describe('shape', () => {
       offenders((file) =>
         (styleOf(file).match(/font-size:\s*[^;]+;/g) ?? []).some(
           (declaration) =>
-            !/font-size:\s*(var\(--fs\)|12px|18px|24px|inherit)\s*;/.test(declaration),
+            !/font-size:\s*(var\(--fs\)|12px|13px|14px|18px|24px|inherit)\s*;/.test(declaration),
         ),
       ),
     ).toEqual([])

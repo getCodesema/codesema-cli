@@ -21,12 +21,15 @@ const props = defineProps<{
   focusedKeys: readonly string[]
   /** Display names by project id — role identity for each agent row. */
   projectNames: ReadonlyMap<string, string>
+  /** Scratch "+" draft as a selected Agents row (Grok "Nouveau Bot"). */
+  draftRow?: { key: string; projectId: string; title: string; updatedAt: string } | null
 }>()
 
 const emit = defineEmits<{
   select: [state: TaskState]
   create: []
   settings: []
+  'focus-draft': []
 }>()
 
 const query = ref('')
@@ -43,8 +46,42 @@ const filteredStates = computed(() =>
 )
 const orderedStates = computed(() => orderConversations(filteredStates.value))
 
-const isEmpty = computed(() => props.states.length === 0)
+const isEmpty = computed(() => props.states.length === 0 && !props.draftRow)
 const isSearchEmpty = computed(() => props.states.length > 0 && filteredStates.value.length === 0)
+
+/** Synthetic TaskState so the scratch draft reuses ConversationRow chrome. */
+const draftState = computed<TaskState | null>(() => {
+  const row = props.draftRow
+  if (!row) {
+    return null
+  }
+  return {
+    projectId: row.projectId,
+    record: {
+      version: 1,
+      id: 'draft',
+      title: row.title,
+      status: 'queued',
+      base: '',
+      branch: '',
+      worktree: '',
+      agent_session_id: null,
+      turns: [],
+      review_ref: null,
+      work_ms: 0,
+      wait_ms: 0,
+      auto_ship: false,
+      created_at: row.updatedAt,
+      updated_at: row.updatedAt,
+    },
+    events: [],
+    liveText: '',
+    liveMessages: [],
+    liveTokens: 0,
+    liveLoadCap: null,
+    checks: null,
+  }
+})
 
 // One trailing icon at most today (the clear button, only once a query is
 // typed): the padding is still COMPUTED, never a fixed number. The + action
@@ -100,11 +137,20 @@ function projectNameOf(state: TaskState): string {
 
     <div class="cvl-scroll">
       <p v-if="isEmpty" class="cvl-empty empty">{{ t('conversations.empty') }}</p>
-      <p v-else-if="isSearchEmpty" class="cvl-empty empty">
+      <p v-else-if="isSearchEmpty && !draftRow" class="cvl-empty empty">
         {{ t('conversations.searchEmpty') }}
       </p>
 
       <div v-else class="cvl-list">
+        <button
+          v-if="draftRow && draftState"
+          type="button"
+          class="cvl-row-btn cvl-row-btn--selected"
+          aria-current="true"
+          @click="emit('focus-draft')"
+        >
+          <ConversationRow :state="draftState" :project-name="draftRow.title" />
+        </button>
         <button
           v-for="state in orderedStates"
           :key="taskKey(state.projectId, state.record.id)"
@@ -148,7 +194,7 @@ function projectNameOf(state: TaskState): string {
   width: 100%;
   min-height: 0;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--bg-rail);
   border: 0;
 }
 
@@ -159,8 +205,9 @@ function projectNameOf(state: TaskState): string {
   align-items: center;
   box-sizing: border-box;
   gap: 0.75rem;
-  margin: 0.75rem 0.85rem 0.5rem;
-  padding: 0.55rem 0.75rem;
+  height: 36px;
+  margin: 12px;
+  padding: 0 0.75rem;
   border: 0;
   border-radius: var(--radius-pill);
   background: var(--bg-search);
@@ -245,9 +292,11 @@ function projectNameOf(state: TaskState): string {
   margin: 0;
   text-align: left;
   font: inherit;
-  padding: 0.65rem 0.75rem;
+  min-height: 56px;
+  box-sizing: border-box;
+  padding: 0.75rem 0.75rem;
   border: none;
-  border-radius: var(--radius-bubble);
+  border-radius: var(--radius-row);
   background: transparent;
   color: inherit;
   cursor: pointer;

@@ -285,6 +285,59 @@ const draftEntry = computed(() => {
   return entry !== null && entry.kind === 'draft' ? entry : null
 })
 
+/** Timestamp frozen when the scratch "+" draft opens — feeds the Agents row
+ * and the empty-stage "Today HH:MM" marker. Cleared when leaving scratch. */
+const scratchOpenedAt = ref<string | null>(null)
+watch(
+  () => focus.value,
+  (view) => {
+    if (view.kind === 'draft' && view.draft.mode === 'scratch') {
+      if (scratchOpenedAt.value === null) {
+        scratchOpenedAt.value = new Date().toISOString()
+      }
+      return
+    }
+    scratchOpenedAt.value = null
+  },
+)
+
+/** Selected Agents row for the open scratch draft (Grok "Nouveau Bot"). */
+const scratchListRow = computed(() => {
+  const entry = draftEntry.value
+  if (entry === null || entry.draft.mode !== 'scratch' || scratchOpenedAt.value === null) {
+    return null
+  }
+  return {
+    key: entry.key,
+    projectId: entry.projectId,
+    title: t('workspace.draftScratchTitle'),
+    updatedAt: scratchOpenedAt.value,
+  }
+})
+
+/** Empty-stage date chip: "Today 13:54" / "Aujourd'hui 13:54". */
+const scratchWhenLabel = computed(() => {
+  const iso = scratchOpenedAt.value
+  if (iso === null) {
+    return ''
+  }
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) {
+    return ''
+  }
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return t('workspace.draftScratchWhen', { time: `${hh}:${mm}` })
+})
+
+function onFocusScratchDraft(): void {
+  const projectId = scratchProjectId.value
+  if (projectId === null) {
+    return
+  }
+  openDraft(projectId, scratchDraft())
+}
+
 /** Every prop of the open conversation, bound in one object (the shape
  * the repository list uses too): the per-action closures capture the ids
  * once here, where the entry is narrowed, instead of in template callbacks
@@ -791,8 +844,10 @@ watch(
           :states="queueStates"
           :focused-keys="focusedKeys"
           :project-names="projectNameById"
+          :draft-row="scratchListRow"
           @select="(state) => openConversation(state.projectId, state.record.id)"
           @create="onNewConversation"
+          @focus-draft="onFocusScratchDraft"
           @settings="toggleSettings"
         />
       </aside>
@@ -833,117 +888,150 @@ watch(
             @open-review="openReview"
           />
 
-          <!-- Draft: a composer with no repository at all (scratch), or in
-                 fork mode (a new branch from a base), or in work-on mode
-                 (directly on an existing branch); the create turns this into
-                 the real conversation, in place. -->
-          <div v-else-if="draftEntry" class="ws-draft-wrap">
-            <div class="ws-draft">
-              <header class="ws-draft-head">
-                <h2 class="ws-draft-title">
-                  {{
-                    draftEntry.draft.mode === 'scratch'
-                      ? t('workspace.draftScratchTitle')
-                      : draftEntry.draft.mode === 'fork'
+          <!-- Draft: scratch = empty 1:1 chat chrome (no middle card). Fork /
+                 work-on keep modes / trunk warning / chips — logic retained,
+                 only hidden from default scratch chrome. -->
+          <div v-else-if="draftEntry" class="ws-draft-stage" :data-mode="draftEntry.draft.mode">
+            <template v-if="draftEntry.draft.mode === 'scratch'">
+              <header class="ws-scratch-head">
+                <span class="ws-scratch-avatar" aria-hidden="true" />
+                <h1 class="ws-scratch-title">{{ t('workspace.draftScratchTitle') }}</h1>
+              </header>
+              <div class="ws-scratch-body">
+                <p v-if="scratchWhenLabel" class="ws-scratch-when">{{ scratchWhenLabel }}</p>
+                <span class="ws-scratch-seed" aria-hidden="true" />
+              </div>
+              <div class="ws-scratch-composer">
+                <TaskComposer
+                  compact
+                  capsule
+                  :creating="runOf(draftEntry.projectId, draftEntry.draft).creating"
+                  :error="runOf(draftEntry.projectId, draftEntry.draft).error"
+                  :agents="agents"
+                  :current-agent="
+                    isolationForProject(draftEntry.projectId, projects, workspace)?.agent ??
+                    currentAgent
+                  "
+                  :isolation="
+                    isolationForProject(draftEntry.projectId, projects, workspace)
+                      ?.isolation_default ?? null
+                  "
+                  :project-kind="projectKindById.get(draftEntry.projectId) ?? 'repo'"
+                  :draft="draftEntry.draft"
+                  :plan="planOf(draftEntry.projectId, draftEntry.draft).plan"
+                  :plan-error="planOf(draftEntry.projectId, draftEntry.draft).error"
+                  :plan-pending="planOf(draftEntry.projectId, draftEntry.draft).pending"
+                  :initial-prompt="planRequests.promptOf(draftEntry.key)"
+                  @create="onFocusDraftCreate"
+                  @plan-input="onFocusPlanInput"
+                  @retarget="onFocusDraftRetarget"
+                />
+              </div>
+            </template>
+
+            <div v-else class="ws-draft-wrap">
+              <div class="ws-draft">
+                <header class="ws-draft-head">
+                  <h2 class="ws-draft-title">
+                    {{
+                      draftEntry.draft.mode === 'fork'
                         ? t('workspace.draftForkTitle', { base: draftEntry.draft.base })
                         : t('workspace.draftWorkonTitle', { branch: draftEntry.draft.branch })
-                  }}
-                </h2>
-                <span class="ws-draft-project">
-                  {{ projectNameById.get(draftEntry.projectId) ?? draftEntry.projectId }}
-                </span>
-                <button
-                  class="ws-draft-close btn ghost"
-                  type="button"
-                  :aria-label="t('workspace.addProjectCancel')"
-                  :title="t('workspace.addProjectCancel')"
-                  @click="onFocusDraftClose"
+                    }}
+                  </h2>
+                  <span class="ws-draft-project">
+                    {{ projectNameById.get(draftEntry.projectId) ?? draftEntry.projectId }}
+                  </span>
+                  <button
+                    class="ws-draft-close btn ghost"
+                    type="button"
+                    :aria-label="t('workspace.addProjectCancel')"
+                    :title="t('workspace.addProjectCancel')"
+                    @click="onFocusDraftClose"
+                  >
+                    {{ G.ko }}
+                  </button>
+                </header>
+                <div
+                  class="ws-draft-modes seg"
+                  role="group"
+                  :aria-label="t('workspace.draftModeLabel')"
                 >
-                  {{ G.ko }}
-                </button>
-              </header>
-              <!-- No repository at all: neither a work-on/fork mode nor a
-                     branch/base chip means anything, so this scratch draft
-                     shows none of it (only the composer's own sober notice). -->
-              <div
-                v-if="draftEntry.draft.mode !== 'scratch'"
-                class="ws-draft-modes seg"
-                role="group"
-                :aria-label="t('workspace.draftModeLabel')"
-              >
-                <button
-                  class="ws-draft-mode"
-                  :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'workon' }"
-                  :aria-pressed="draftEntry.draft.mode === 'workon'"
-                  type="button"
-                  @click="draftEntry.draft.mode === 'fork' && onFocusToggleDraftMode()"
-                >
-                  {{ t('workspace.draftModeWorkon') }}
-                </button>
-                <button
-                  class="ws-draft-mode"
-                  :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'fork' }"
-                  :aria-pressed="draftEntry.draft.mode === 'fork'"
-                  type="button"
-                  @click="draftEntry.draft.mode === 'workon' && onFocusToggleDraftMode()"
-                >
-                  {{ t('workspace.draftModeFork') }}
-                </button>
-              </div>
-              <p
-                v-if="draftEntry.draft.mode === 'workon' && isTrunkBranch(draftEntry.draft.branch)"
-                class="ws-draft-warning"
-              >
-                {{ t('workspace.draftTrunkWarning', { branch: draftEntry.draft.branch }) }}
-              </p>
-              <div v-if="draftEntry.draft.mode !== 'scratch'" class="ws-draft-chips">
-                <span
-                  class="ws-draft-chip badge"
-                  :title="
-                    draftEntry.draft.mode === 'fork'
-                      ? t('workspace.draftBaseHint', { branch: draftEntry.draft.base })
-                      : t('workspace.draftWorkonHint', { branch: draftEntry.draft.branch })
+                  <button
+                    class="ws-draft-mode"
+                    :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'workon' }"
+                    :aria-pressed="draftEntry.draft.mode === 'workon'"
+                    type="button"
+                    @click="draftEntry.draft.mode === 'fork' && onFocusToggleDraftMode()"
+                  >
+                    {{ t('workspace.draftModeWorkon') }}
+                  </button>
+                  <button
+                    class="ws-draft-mode"
+                    :class="{ 'ws-draft-mode--on': draftEntry.draft.mode === 'fork' }"
+                    :aria-pressed="draftEntry.draft.mode === 'fork'"
+                    type="button"
+                    @click="draftEntry.draft.mode === 'workon' && onFocusToggleDraftMode()"
+                  >
+                    {{ t('workspace.draftModeFork') }}
+                  </button>
+                </div>
+                <p
+                  v-if="
+                    draftEntry.draft.mode === 'workon' && isTrunkBranch(draftEntry.draft.branch)
                   "
+                  class="ws-draft-warning"
                 >
-                  <span aria-hidden="true">{{ G.branch }}</span>
-                  {{
-                    draftEntry.draft.mode === 'fork'
-                      ? draftEntry.draft.base
-                      : draftEntry.draft.branch
-                  }}
-                </span>
-                <!-- Work-on from an MR node: the merge target rides along. -->
-                <span
-                  v-if="draftEntry.draft.mode === 'workon' && draftEntry.draft.target !== null"
-                  class="ws-draft-chip badge"
-                  :title="t('workspace.draftTargetHint', { target: draftEntry.draft.target })"
-                >
-                  <span aria-hidden="true">→</span> {{ draftEntry.draft.target }}
-                </span>
+                  {{ t('workspace.draftTrunkWarning', { branch: draftEntry.draft.branch }) }}
+                </p>
+                <div class="ws-draft-chips">
+                  <span
+                    class="ws-draft-chip badge"
+                    :title="
+                      draftEntry.draft.mode === 'fork'
+                        ? t('workspace.draftBaseHint', { branch: draftEntry.draft.base })
+                        : t('workspace.draftWorkonHint', { branch: draftEntry.draft.branch })
+                    "
+                  >
+                    <span aria-hidden="true">{{ G.branch }}</span>
+                    {{
+                      draftEntry.draft.mode === 'fork'
+                        ? draftEntry.draft.base
+                        : draftEntry.draft.branch
+                    }}
+                  </span>
+                  <span
+                    v-if="draftEntry.draft.mode === 'workon' && draftEntry.draft.target !== null"
+                    class="ws-draft-chip badge"
+                    :title="t('workspace.draftTargetHint', { target: draftEntry.draft.target })"
+                  >
+                    <span aria-hidden="true">→</span> {{ draftEntry.draft.target }}
+                  </span>
+                </div>
+                <TaskComposer
+                  compact
+                  :creating="runOf(draftEntry.projectId, draftEntry.draft).creating"
+                  :error="runOf(draftEntry.projectId, draftEntry.draft).error"
+                  :agents="agents"
+                  :current-agent="
+                    isolationForProject(draftEntry.projectId, projects, workspace)?.agent ??
+                    currentAgent
+                  "
+                  :isolation="
+                    isolationForProject(draftEntry.projectId, projects, workspace)
+                      ?.isolation_default ?? null
+                  "
+                  :project-kind="projectKindById.get(draftEntry.projectId) ?? 'repo'"
+                  :draft="draftEntry.draft"
+                  :plan="planOf(draftEntry.projectId, draftEntry.draft).plan"
+                  :plan-error="planOf(draftEntry.projectId, draftEntry.draft).error"
+                  :plan-pending="planOf(draftEntry.projectId, draftEntry.draft).pending"
+                  :initial-prompt="planRequests.promptOf(draftEntry.key)"
+                  @create="onFocusDraftCreate"
+                  @plan-input="onFocusPlanInput"
+                  @retarget="onFocusDraftRetarget"
+                />
               </div>
-              <TaskComposer
-                compact
-                :creating="runOf(draftEntry.projectId, draftEntry.draft).creating"
-                :error="runOf(draftEntry.projectId, draftEntry.draft).error"
-                :agents="agents"
-                :current-agent="
-                  isolationForProject(draftEntry.projectId, projects, workspace)?.agent ??
-                  currentAgent
-                "
-                :isolation="
-                  isolationForProject(draftEntry.projectId, projects, workspace)
-                    ?.isolation_default ?? null
-                "
-                :project-kind="projectKindById.get(draftEntry.projectId) ?? 'repo'"
-                :draft="draftEntry.draft"
-                :plan="planOf(draftEntry.projectId, draftEntry.draft).plan"
-                :plan-error="planOf(draftEntry.projectId, draftEntry.draft).error"
-                :plan-pending="planOf(draftEntry.projectId, draftEntry.draft).pending"
-                :initial-prompt="planRequests.promptOf(draftEntry.key)"
-                @create="onFocusDraftCreate"
-                @plan-input="onFocusPlanInput"
-                @retarget="onFocusDraftRetarget"
-              />
             </div>
           </div>
         </div>
@@ -1092,7 +1180,82 @@ watch(
   flex-direction: column;
 }
 
-/* ── Draft panel ──────────────────────────────────────────────────────── */
+/* ── Draft stage ──────────────────────────────────────────────────────── */
+.ws-draft-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+/* Scratch: thin header + empty black air + bottom capsule (no middle card). */
+.ws-scratch-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  height: 48px;
+  box-sizing: border-box;
+  padding: 0 1rem;
+  background: var(--bg);
+}
+
+.ws-scratch-avatar {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  background: var(--fg-muted);
+}
+
+.ws-scratch-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--fg);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-scratch-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.75rem 1rem 0;
+}
+
+.ws-scratch-when {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.ws-scratch-seed {
+  position: absolute;
+  top: 2.5rem;
+  left: max(1rem, calc(50% - 360px));
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-pill);
+  background: var(--fg-muted);
+  opacity: 0.85;
+}
+
+.ws-scratch-composer {
+  flex: none;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0.65rem 1rem 1rem;
+  box-sizing: border-box;
+}
+
 .ws-draft-wrap {
   flex: 1;
   min-height: 0;

@@ -532,7 +532,9 @@ const en = {
   'workspace.draftWorkonTitle': 'Work on {branch}',
   /** A draft targeting the repo-less scratch project: no branch is ever
    * forked, so the title names neither a base nor a branch. */
-  'workspace.draftScratchTitle': 'New conversation',
+  'workspace.draftScratchTitle': 'New agent',
+  /** Empty scratch stage date chip under the thin header. */
+  'workspace.draftScratchWhen': 'Today {time}',
   'workspace.draftModeLabel': 'Conversation mode',
   'workspace.draftModeWorkon': 'Work on the branch',
   'workspace.draftModeFork': 'New branch from it',
@@ -1392,7 +1394,8 @@ const fr: Record<MessageKey, string> = {
   // --- branch = conversation (amendment 4) ---
   'workspace.draftForkTitle': 'Nouvelle conversation depuis {base}',
   'workspace.draftWorkonTitle': 'Travailler sur {branch}',
-  'workspace.draftScratchTitle': 'Nouvelle conversation',
+  'workspace.draftScratchTitle': 'Nouveau Bot',
+  'workspace.draftScratchWhen': "Aujourd'hui {time}",
   'workspace.draftModeLabel': 'Mode de la conversation',
   'workspace.draftModeWorkon': 'Travailler sur la branche',
   'workspace.draftModeFork': 'Nouvelle branche depuis',
