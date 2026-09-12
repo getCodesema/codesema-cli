@@ -1,23 +1,22 @@
 /* Ported verbatim from design/ui-kit.html. Palette and contrast are client-only:
    <html data-palette="…" data-contrast="aaa">, driven by src/theme.ts. */
 :root {
-  /* ---- tokens: Tokyo Night (default palette) ---- */
-  --bg: #1a1b26;
-  --bg-raised: #1f2335;
-  --bg-hover: #292e42;
-  --line: #3b4261;
-  --fg: #c0caf5;
-  --fg-muted: #565f89; /* decorative only: tree lines, #, disabled. Never text meant to be read */
-  --fg-dim: #8a92bd; /* secondary text, AA >= 4.5 on --bg and --bg-raised */
-  --accent: #7dcfff; /* focus, links, primary action */
+  /* ---- tokens: Ink (default palette) — Grok-like near-black, little colour ---- */
+  --bg: #0e0e0e;
+  --bg-raised: #1a1a1a;
+  --bg-hover: #222222;
+  --line: #2a2a2a;
+  --fg: #e8e8e8;
+  --fg-muted: #5a5a5a; /* decorative only: tree lines, #, disabled. Never text meant to be read */
+  --fg-dim: #9a9a9a; /* secondary text, AA >= 4.5 on --bg and --bg-raised */
+  --accent: #d0d0d0; /* focus, links, primary action — almost white/gray */
   --ok: #9ece6a;
   --warn: #e0af68;
   --err: #f7768e;
-  --info: #7aa2f7;
-  --alt: #bb9af7;
-  /* ---- type ---- */
-  --font:
-    'CaskaydiaMono Nerd Font', 'CaskaydiaCove Nerd Font', 'Cascadia Mono', ui-monospace, monospace;
+  --info: #a0a0a0;
+  --alt: #b0b0b0;
+  /* ---- type: readable sans for chrome/chat; mono stays on code via base.css ---- */
+  --font: system-ui, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --fs: 14px;
   --lh: 1.6;
   /* ---- space: everything in multiples of 1ch / one line ---- */
@@ -26,6 +25,27 @@
 }
 /* AAA variant (>= 7:1 on --bg and --bg-raised): same hues, lightened */
 :root[data-contrast='aaa'] {
+  --fg-dim: #b0b0b0;
+  --info: #b8b8b8;
+  --err: #f991a5;
+}
+/* Classic Tokyo Night kept as an optional swatch (not the default). */
+:root[data-palette='tokyonight'] {
+  --bg: #1a1b26;
+  --bg-raised: #1f2335;
+  --bg-hover: #292e42;
+  --line: #3b4261;
+  --fg: #c0caf5;
+  --fg-muted: #565f89;
+  --fg-dim: #8a92bd;
+  --accent: #7dcfff;
+  --ok: #9ece6a;
+  --warn: #e0af68;
+  --err: #f7768e;
+  --info: #7aa2f7;
+  --alt: #bb9af7;
+}
+:root[data-palette='tokyonight'][data-contrast='aaa'] {
   --fg-dim: #a7adce;
   --info: #8eb0f8;
   --err: #f991a5;

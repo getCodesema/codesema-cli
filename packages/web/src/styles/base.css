@@ -75,8 +75,14 @@ p {
 }
 
 code,
+kbd,
+pre {
+  font-family:
+    'CaskaydiaMono Nerd Font', 'CaskaydiaCove Nerd Font', 'Cascadia Mono', ui-monospace, monospace;
+}
+
+code,
 kbd {
-  font-family: inherit;
   background: var(--bg-raised);
   padding: 0 0.5ch;
 }

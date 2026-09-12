@@ -311,10 +311,14 @@ const thinkingLabel = computed(() => {
 .cv-thinking {
   flex: none;
   align-items: center;
+  border-top: 0;
+  padding: 2px 2ch;
+  background: transparent;
 }
 
 .cv-thinking-label {
   color: var(--fg-dim);
+  font-size: 12px;
 }
 
 .cv-diff {

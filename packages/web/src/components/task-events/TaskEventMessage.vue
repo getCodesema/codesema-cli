@@ -1,10 +1,9 @@
 <script setup lang="ts">
-// Agent message in the thread, maquette form: a mono meta line ("AGENT ·
-// il y a X") over plain text; `inline code` spans render mono.
+// Agent message in the thread: plain text on its own row, no card and no
+// who-gutter chrome. `inline code` spans render mono via base.css.
 // This is what the agent SAID — body text, not a journal line.
 import { computed } from 'vue'
 import { eventSummary, firstString } from '../../composables/useTaskBoard'
-import { t } from '../../i18n'
 import { renderMarkdown } from '../../markdown'
 import { formatExactStamp, formatRelativeAge } from '../../relative-time'
 import type { TaskEventCtx } from '../../task-event-registry'
@@ -27,12 +26,9 @@ const exact = computed(() => formatExactStamp(props.event.at))
 </script>
 
 <template>
-  <div class="tvm-root" :title="exact">
-    <p class="tvm-meta">
-      {{ t('workspace.agentLabel') }}<template v-if="ago"> · {{ ago }}</template>
-    </p>
+  <div class="tvm-root msg" :title="exact || ago || undefined">
     <!-- eslint-disable-next-line vue/no-v-html — renderMarkdown escapes everything first -->
-    <div class="tvm-bubble tvm-md md" v-html="html" />
+    <div class="tvm-bubble tvm-md md body" v-html="html" />
   </div>
 </template>
 
@@ -40,15 +36,13 @@ const exact = computed(() => formatExactStamp(props.event.at))
 .tvm-root {
   display: flex;
   flex-direction: column;
-  gap: calc(var(--row) / 2);
-  max-width: 85%;
-}
-
-.tvm-meta {
-  margin: 0;
-  font-size: 12px;
-  text-transform: uppercase;
-  color: var(--fg-muted);
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 72ch;
+  /* Agent: plain text on its own row — no card, no frame. */
+  background: transparent;
+  border: 0;
+  padding: 0;
 }
 
 .tvm-bubble {
@@ -56,5 +50,7 @@ const exact = computed(() => formatExactStamp(props.event.at))
   color: var(--fg);
   overflow-wrap: anywhere;
   min-width: 0;
+  background: transparent;
+  border: 0;
 }
 </style>

@@ -157,12 +157,12 @@ const canSend = (): boolean => props.draft.trim() !== ''
   gap: 1ch;
   min-width: 0;
   border: 1px solid var(--line);
-  background: var(--bg);
-  padding: calc(var(--row) / 2) 1ch;
+  background: var(--bg-raised);
+  padding: calc(var(--row) / 2) 1.5ch;
 }
 
 .cv-reply-field:focus-within {
-  border-color: var(--accent);
+  border-color: var(--fg-dim);
 }
 
 /* Amber only here: an open question is the one thing blocking the agent. */
@@ -193,6 +193,12 @@ const canSend = (): boolean => props.draft.trim() !== ''
 .cv-reply-send {
   flex: none;
   align-self: flex-end;
+}
+
+.cv-reply-send.btn.primary {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
 }
 
 .cv-reply-hint {

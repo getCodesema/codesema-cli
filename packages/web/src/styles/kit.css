@@ -708,7 +708,8 @@ button.cell[aria-pressed='true'] {
 .conv {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--line);
+  border: 0;
+  background: var(--bg);
 }
 
 .conv-h {
@@ -739,22 +740,22 @@ button.cell[aria-pressed='true'] {
 .thread {
   display: flex;
   flex-direction: column;
-  gap: var(--row);
-  padding: var(--row) 1ch;
+  gap: calc(var(--row) * 1.25);
+  padding: var(--row) 2ch;
   max-height: calc(var(--row) * 26);
   overflow: auto;
 }
 
 .msg {
-  display: grid;
-  grid-template-columns: 4ch 1fr;
-  gap: 1ch;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
+/* Who-gutter chrome is off by default: a 1:1 thread is plain text, not a box. */
 .msg .who {
-  color: var(--fg-muted);
-  font-size: 12px;
-  text-align: right;
+  display: none;
 }
 
 .msg .body {
@@ -763,8 +764,7 @@ button.cell[aria-pressed='true'] {
   overflow-wrap: anywhere;
 }
 
-/* User row: one full-width chat line, bubble pushed to the RIGHT. Bot `.msg`
-   rows keep the 4ch gutter grid above — only `.msg.user` opts out. */
+/* User row: own line, right, subtle gray fill, NO border/outline. */
 .msg.user {
   display: flex;
   flex-direction: column;
@@ -772,11 +772,11 @@ button.cell[aria-pressed='true'] {
   gap: 2px;
 }
 
-/* The one filled surface of the thread: what the reader typed. Nothing else
-   here carries a background, a frame or a rail. */
 .msg.user .body {
   color: var(--fg);
   background: var(--bg-raised);
+  border: 0;
+  outline: none;
   padding: calc(var(--row) / 2) 2ch;
   max-width: 72ch;
   width: fit-content;
@@ -907,6 +907,7 @@ button.cell[aria-pressed='true'] {
   gap: 1ch;
   padding: calc(var(--row) / 2) 1ch;
   border-top: 1px solid var(--line);
+  background: var(--bg);
 }
 
 .composer textarea {

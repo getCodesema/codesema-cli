@@ -42,6 +42,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{ 'pick-tab': [tab: FocusTab]; error: [message: string | null] }>()
 
+// Default 1:1 chrome: agent/role name only. Meta line, tab bar, and
+// ship/interrupt/attach clusters stay in this file — unmounted, not deleted.
+const SHOW_EXTRA_CHROME = false
+
 const record = computed(() => props.state.record)
 // Identité = rôle issu du projet (session agent), pas le titre du ticket.
 const label = computed(
@@ -163,7 +167,7 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
         <span class="cv-dot status" :data-tone="visual.tone" aria-hidden="true" />
         <h1 class="cv-title">{{ label }}</h1>
       </div>
-      <span class="cv-actions act">
+      <span v-if="SHOW_EXTRA_CHROME" class="cv-actions act">
         <button
           v-if="canInterrupt"
           class="cv-btn cv-btn--interrupt btn ghost"
@@ -192,21 +196,22 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
         </button>
       </span>
 
-      <!-- One meta line, plain text: what holds the conversation, then where
-           it happens and how long it took. -->
+      <!-- Quiet status phrase under the name; meta chips stay behind the flag. -->
       <div class="cv-sub chips">
         <span class="cv-phrase" :data-tone="phraseTone">{{ t(phraseKey) }}</span>
 
-        <template v-for="item in metaItems" :key="item.key">
-          <span class="cv-sep" aria-hidden="true">{{ G.sep }}</span>
-          <span class="cv-chip" :class="`cv-chip--${item.kind}`" :title="item.hint ?? undefined">
-            {{ item.text }}
-          </span>
+        <template v-if="SHOW_EXTRA_CHROME">
+          <template v-for="item in metaItems" :key="item.key">
+            <span class="cv-sep" aria-hidden="true">{{ G.sep }}</span>
+            <span class="cv-chip" :class="`cv-chip--${item.kind}`" :title="item.hint ?? undefined">
+              {{ item.text }}
+            </span>
+          </template>
         </template>
 
         <!-- Still offered once some are attached: a scratch conversation can
              take more than one. -->
-        <template v-if="projectKind === 'scratch'">
+        <template v-if="SHOW_EXTRA_CHROME && projectKind === 'scratch'">
           <template v-if="repoProjects.length === 0">
             <span class="cv-sep" aria-hidden="true">{{ G.sep }}</span>
             <span class="cv-chip">{{ t('workspace.attachRepoNone') }}</span>
@@ -241,6 +246,7 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
         <!-- The label on line 1 is a name; the sentence that was asked is one
              click away rather than in front of the first message. -->
         <button
+          v-if="SHOW_EXTRA_CHROME"
           class="cv-prompt-toggle"
           type="button"
           :aria-expanded="promptOpen"
@@ -251,7 +257,7 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
         </button>
       </div>
 
-      <p v-show="promptOpen" class="cv-full-title">{{ record.title }}</p>
+      <p v-if="SHOW_EXTRA_CHROME" v-show="promptOpen" class="cv-full-title">{{ record.title }}</p>
 
       <p v-if="reasonDetail" class="cv-reason">{{ reasonDetail }}</p>
       <p v-if="shipNotice" class="cv-notice">{{ shipNotice }}</p>
@@ -261,7 +267,7 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
       <p v-if="actionError" class="cv-error">{{ actionError }}</p>
     </div>
 
-    <nav class="cv-tabs tabs" :aria-label="t('workspace.conversations')">
+    <nav v-if="SHOW_EXTRA_CHROME" class="cv-tabs tabs" :aria-label="t('workspace.conversations')">
       <button
         class="cv-tab tab"
         :class="{ 'cv-tab--active': tab === 'conversation' }"
@@ -305,6 +311,7 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
   flex-direction: column;
   background: var(--bg);
   border-bottom: 1px solid var(--line);
+  padding: calc(var(--row) / 4) 0;
 }
 
 .cv-conv-h {
@@ -335,6 +342,8 @@ const checksTab = computed(() => splitTabLabel(props.checksTabText))
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .cv-actions {

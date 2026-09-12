@@ -126,7 +126,9 @@ describe('TaskEventUser is a right-aligned chat bubble on its own row', () => {
   test('the kit fills the user prompt, and rails it no more', () => {
     expect(kitUserBody()).toContain('background: var(--bg-raised);')
     expect(kitUserBody()).toContain('padding: calc(var(--row) / 2) 2ch;')
-    expect(kitUserBody()).not.toContain('border')
+    // Explicit border: 0 is fine; a visible outline/box is not.
+    expect(kitUserBody()).not.toMatch(/border:\s*1px/)
+    expect(kitUserBody()).not.toContain('outline: 1px')
   })
 
   test('the kit pushes the whole user row to the right', () => {

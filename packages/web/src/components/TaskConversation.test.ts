@@ -382,8 +382,9 @@ describe('the header names the agent role, then folds what was asked', () => {
     })
     expect(html).toContain('>repo<')
     expect(html).not.toContain('>rename package<')
-    // The asked sentence stays folded behind the prompt toggle.
-    expect(html).toContain('Rename nolyra to codesema')
+    // Quiet chrome: the asked sentence is not printed in the header.
+    expect(html).not.toContain('Rename nolyra to codesema')
+    expect(html).not.toContain('cv-prompt-toggle')
   })
 })
 

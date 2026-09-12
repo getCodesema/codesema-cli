@@ -2,6 +2,7 @@ import { ref, watchEffect } from 'vue'
 import { readStorageItem, writeStorageItem } from './storage'
 
 export const PALETTES = [
+  { id: 'ink', label: 'Ink' },
   { id: 'tokyonight', label: 'Tokyo Night' },
   { id: 'nord', label: 'Nord' },
   { id: 'gruvbox', label: 'Gruvbox Dark' },
@@ -16,7 +17,7 @@ export const PALETTES = [
 export type PaletteId = (typeof PALETTES)[number]['id']
 export type Contrast = 'aa' | 'aaa'
 
-export const DEFAULT_PALETTE: PaletteId = 'tokyonight'
+export const DEFAULT_PALETTE: PaletteId = 'ink'
 export const DEFAULT_CONTRAST: Contrast = 'aa'
 
 export const PALETTE_STORAGE_KEY = 'codesema-palette'
@@ -53,7 +54,20 @@ export function applyTheme(root: ThemeRoot, palette: PaletteId, contrast: Contra
   }
 }
 
-const palette = ref<PaletteId>(normalizePalette(readStorageItem(PALETTE_STORAGE_KEY)))
+const PALETTE_MIGRATION_KEY = 'codesema-palette-migrated-ink'
+
+function readInitialPalette(): PaletteId {
+  const stored = readStorageItem(PALETTE_STORAGE_KEY)
+  // One-shot: the previous default id now maps to Ink so bare :root wins.
+  if (stored === 'tokyonight' && readStorageItem(PALETTE_MIGRATION_KEY) !== '1') {
+    writeStorageItem(PALETTE_STORAGE_KEY, 'ink')
+    writeStorageItem(PALETTE_MIGRATION_KEY, '1')
+    return 'ink'
+  }
+  return normalizePalette(stored)
+}
+
+const palette = ref<PaletteId>(readInitialPalette())
 const contrast = ref<Contrast>(normalizeContrast(readStorageItem(CONTRAST_STORAGE_KEY)))
 
 let bound = false

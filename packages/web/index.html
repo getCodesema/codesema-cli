@@ -8,7 +8,14 @@
       try {
         var root = document.documentElement
         var palette = localStorage.getItem('codesema-palette')
-        if (palette && palette !== 'tokyonight') root.dataset.palette = palette
+        // Previous default shipped as tokyonight; its bare :root is now Ink.
+        // Migrate once so first paint matches without fighting a stale key.
+        if (palette === 'tokyonight' && !localStorage.getItem('codesema-palette-migrated-ink')) {
+          localStorage.setItem('codesema-palette', 'ink')
+          localStorage.setItem('codesema-palette-migrated-ink', '1')
+          palette = 'ink'
+        }
+        if (palette && palette !== 'ink') root.dataset.palette = palette
         if (localStorage.getItem('codesema-contrast') === 'aaa') root.dataset.contrast = 'aaa'
       } catch (e) {}
     </script>

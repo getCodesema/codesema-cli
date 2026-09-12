@@ -29,9 +29,9 @@ describe('normalizePalette', () => {
 })
 
 describe('PALETTES', () => {
-  test('has nine distinct ids', () => {
+  test('has ten distinct ids', () => {
     const ids = PALETTES.map((palette) => palette.id)
-    expect(ids).toHaveLength(9)
+    expect(ids).toHaveLength(10)
     expect(new Set(ids).size).toBe(ids.length)
   })
 

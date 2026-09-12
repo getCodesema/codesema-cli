@@ -99,15 +99,27 @@ function tagWith(html: string, className: string): string {
   return match[0]
 }
 
-describe('the meta line is one line of plain text', () => {
-  test('project, branch, isolation and work read as text joined by the separator', async () => {
+describe('default 1:1 chrome is the agent name only', () => {
+  test('tab bar, action clusters and meta chips are not mounted', async () => {
     const html = await renderHeader()
-    const line = html.slice(html.indexOf('cv-sub'), html.indexOf('cv-tabs'))
-    expect(line).toContain('codesema-bench')
-    expect(line).toContain('codesema/task-add-hello-markdown-file')
-    expect(line).toContain(t('workspace.isolationPolicy'))
-    expect(line).toContain(t('workspace.workTime', { t: t('workspace.durSeconds', { n: 31 }) }))
-    expect(line).toContain(G.sep)
+    // Status phrase stays; isolation/branch/chronos chips do not.
+    expect(html).toContain('cv-phrase')
+    expect(html).not.toContain('cv-chip')
+    expect(html).not.toContain('cv-tabs')
+    expect(html).not.toContain('cv-actions')
+    expect(html).not.toContain(t('workspace.tabConversation'))
+    expect(html).not.toContain(t('workspace.interrupt'))
+    expect(html).not.toContain(t('workspace.isolationPolicy'))
+  })
+
+  test('the components stay in the source behind SHOW_EXTRA_CHROME, not deleted', async () => {
+    const SOURCE = await Bun.file(new URL('./ConversationHeader.vue', import.meta.url)).text()
+    expect(SOURCE).toContain('SHOW_EXTRA_CHROME')
+    expect(SOURCE).toContain('cv-sub')
+    expect(SOURCE).toContain('cv-tabs')
+    expect(SOURCE).toContain('cv-actions')
+    expect(SOURCE).toContain('doInterrupt')
+    expect(SOURCE).toContain('doShip')
   })
 
   // The mutation this kills: giving the isolation word its badge box back.
@@ -146,23 +158,21 @@ describe('only a state a human must act on takes a colour', () => {
   // own amber says it once.
   test('a waiting task raises no extra attention glyph beside the dot', async () => {
     const html = await renderHeader({ record: { status: 'waiting_for_you' } })
-    const line = html.slice(html.indexOf('cv-title-row'), html.indexOf('cv-actions'))
+    const start = html.indexOf('cv-title-row')
+    const end = html.indexOf('</div>', start)
+    const line = html.slice(start, end)
     expect(line).not.toContain(`>${G.attention}<`)
     expect(line).toContain('cv-dot status" data-tone="warn"')
   })
 })
 
-describe('the asked sentence is folded, not printed', () => {
-  test('the toggle is closed by default and names what it would open', async () => {
+describe('the asked sentence stays off the default chrome', () => {
+  test('the prompt toggle is not mounted in the quiet header', async () => {
     const html = await renderHeader()
-    const toggle = tagWith(html, 'cv-prompt-toggle')
-    expect(toggle).toContain('aria-expanded="false"')
-    expect(html).toContain(t('workspace.showPrompt'))
-    expect(html).toContain(G.collapse)
-    // Still in the markup — hidden, so opening it costs no fetch and the
-    // sentence stays findable by the browser's own search.
-    expect(tagWith(html, 'cv-full-title')).toContain('display:none')
-    expect(html).toContain('Add a hello markdown file')
+    expect(html).not.toContain('cv-prompt-toggle')
+    expect(html).not.toContain(t('workspace.showPrompt'))
+    // Ticket title is not printed in the quiet header either.
+    expect(html).not.toContain('Add a hello markdown file')
   })
 
   // The blocker's sentence is a real state, so it is NOT folded away.
@@ -176,33 +186,14 @@ describe('the asked sentence is folded, not printed', () => {
   })
 })
 
-describe('the tab bar counts quietly', () => {
-  test('the counter is split off the label so it can keep its own grey', async () => {
+describe('the tab bar is off the default chrome', () => {
+  test('quiet header mounts no tab markup; the source still owns the counters', async () => {
     const html = await renderHeader()
-    const tabs = html.slice(html.indexOf('cv-tabs'))
-    expect(tabs).toContain('cv-tab-count')
-    expect(tabs).toContain(t('workspace.tabConversation'))
-    expect(tabs).toContain(G.ok)
-  })
-
-  test('a passing checks tab carries no tone; a failing one does', async () => {
-    const passing = await renderHeader()
-    expect(passing).not.toContain('cv-tab--checks-fail')
-    const failing = await renderHeader({
-      checksTabText: `${t('workspace.tabChecks')} ${G.fail}`,
-      checksToneClass: 'cv-tab--checks-fail',
-    })
-    expect(failing).toContain('cv-tab--checks-fail')
-  })
-
-  test('the tone never lands on the whole button, only on its counter', async () => {
-    const html = await renderHeader({
-      checksTabText: `${t('workspace.tabChecks')} ${G.fail}`,
-      checksToneClass: 'cv-tab--checks-fail',
-    })
-    const button = html.match(/<button[^>]*cv-tab[^>]*>(?![\s\S]*?<button)/)
-    expect(button).not.toBeNull()
-    expect(tagWith(html, 'cv-tab-count cv-tab--checks-fail')).toContain('span')
+    expect(html).not.toContain('cv-tabs')
+    expect(html).not.toContain('cv-tab-count')
+    const SOURCE = await Bun.file(new URL('./ConversationHeader.vue', import.meta.url)).text()
+    expect(SOURCE).toContain('cv-tab-count')
+    expect(SOURCE).toContain('splitTabLabel')
   })
 })
 
@@ -258,7 +249,9 @@ describe('the title names the agent role', () => {
         branch: 'codesema/task-add-hello-markdown-file',
       },
     })
-    const title = html.slice(html.indexOf('cv-title'), html.indexOf('cv-actions'))
+    const start = html.indexOf('cv-title')
+    const end = html.indexOf('</h1>', start)
+    const title = html.slice(start, end)
     expect(title).toContain('codesema-bench')
     expect(title).not.toContain('Add a hello markdown file')
     expect(title).not.toContain('add hello markdown file')

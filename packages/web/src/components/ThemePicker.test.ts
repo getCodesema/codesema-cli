@@ -38,16 +38,16 @@ describe('compact shape: one select for the palette, one segment for the contras
   test('the select lists every palette the theme module declares', async () => {
     const html = await render({ compact: true })
     const options = [...html.matchAll(/<option[^>]*value="([^"]+)"/g)].map((match) => match[1])
-    expect(options).toHaveLength(9)
+    expect(options).toHaveLength(10)
     expect(options).toEqual(PALETTES.map((palette) => palette.id))
   })
 
   // SSR does not resolve v-model on a <select> into a `selected` attribute,
   // so the binding is pinned on the source and the default on the module.
-  test('the select is bound to the palette, whose default option is Tokyo Night', async () => {
+  test('the select is bound to the palette, whose default option is Ink', async () => {
     const html = await render({ compact: true })
     expect(SOURCE).toContain('v-model="palette"')
-    expect(DEFAULT_PALETTE).toBe('tokyonight')
+    expect(DEFAULT_PALETTE).toBe('ink')
     expect(html).toContain(`value="${DEFAULT_PALETTE}"`)
   })
 
